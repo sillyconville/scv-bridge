@@ -1,0 +1,10 @@
+# scv.py is pinned by the sha256 of its bytes (`scv update`, B29) ⇒ three copies of bytes must be the same one:
+# the one the release side hashes, the one the user downloads from raw.githubusercontent (= the committed blob,
+# measured for real, see NOTES.md::update-bytes), and the one installed locally.
+# Without this line, an autocrlf=true Windows checkout is CRLF ⇒ a hash computed on the checkout would not match
+# the one the user downloads.
+# Test: tests/test_95_setup_pair_update.py::Bytes
+scv.py text eol=lf
+# The pieces that tools/build.py joins into scv.py, byte for byte: a CRLF checkout of them would join into a CRLF
+# scv.py (build.py refuses a piece with a CR instead). Test: tests/test_01_build.py::Build
+src/*.py text eol=lf

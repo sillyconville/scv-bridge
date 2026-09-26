@@ -1,0 +1,34 @@
+# Windows only for now (the maintainer's decision, 2026-09-26): every process and network behaviour has only ever
+#   been measured on Windows, so Linux / macOS cells would mostly go red — that is the POSIX pass's job, and that
+#   pass puts ubuntu-latest and macos-latest back into the matrix (one gate per OS, §8 "each OS is its own
+#   independent path"). Never loosen a criterion to turn a cell green. The matrix carries the minimum Python
+#   scv.py declares for itself (scv.MIN_PY).
+# ⚠️The variable that governs stdio encoding is only ever written inside the full-run step's own env (the same as
+#   the command this repository has always been running), never at the job/workflow level; the variable that
+#   turns on UTF-8 mode must never be written anywhere at all: it even changes open()'s default encoding, and
+#   would turn green here a piece of code that only blows up on a GBK/cp1252 machine.
+#   Its shape is pinned by tests/test_98_release.py::CiWorkflow.
+name: ci
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+        python: ["3.9", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: full run
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -W default -m unittest discover -s tests -t . -v
+      - name: piped status and doctor output is UTF-8 with no encoding variable set
+        if: ${{ always() }}
+        run: python -W default -m unittest -v tests.test_97_docs.PipedOutputIsUtf8
