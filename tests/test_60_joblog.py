@@ -109,6 +109,14 @@ class Log(unittest.TestCase):
         #   it still cannot hold free text, this gate's nature has not been loosened.
         self.assertEqual(scv._cli_version("1.2.3 (Claude Code)"), "1.2.3")
         self.assertEqual(scv._cli_version("the version command never ran: … C:/Users/somebody/AppData/claude.cmd"), "")
+        self.assertEqual(scv._cli_version("codex-cli 0.46.0"), "0.46.0")
+        # a version-shaped directory in the quoted executable is never the CLI's version (the first CI run gave claude
+        # the runner's Python version, 3.12.10, out of `…/hostedtoolcache/windows/Python/3.12.10/x64/python.exe`)
+        sep = chr(92)
+        timed_out = ("the version command never ran: Command '['C:%shostedtoolcache%swindows%sPython%s3.12.10%sx64%spython.exe',"
+                     " '--version']' timed out after 10 seconds" % ((sep,) * 6))
+        self.assertEqual(scv._cli_version(timed_out), "")
+        self.assertEqual(scv._cli_version("[WinError 5] Access is denied: 'C:/Users/a/AppData/Roaming/nvm/v20.11.0/claude.cmd'"), "")
 
     def test_remote_rate_limit_and_expiry(self):
         j = scv.JobLog()

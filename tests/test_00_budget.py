@@ -30,14 +30,27 @@ TREE = ast.parse(SRC)
 
 import scv  # noqa: E402  ⭐just an import (touches no disk); SCV_HOME is always set inside setUpModule
 
-# py3.10+ uses the interpreter's own list ⇒ what it blocks is exactly what B2 cares about — a **third-party
-# dependency**, ⛔ not "the 23 names I predicted back then". ⚠️The fallback list below (only used on py<3.10) used
-# to be missing `select`/`shlex`/`socket` ⇒ on 3.9 this gate is red against today's scv.py (MIN_PY is 3.9). What
-# got added back is all real stdlib, ⛔ this is not loosening the "stdlib only" rule.
-STDLIB = getattr(sys, "stdlib_module_names", None) or {
-    "__future__", "argparse", "ast", "collections", "contextlib", "hashlib", "hmac", "http", "json", "os",
-    "pathlib", "queue", "re", "secrets", "shutil", "signal", "subprocess", "sys", "threading", "time",
-    "urllib", "uuid", "ipaddress", "ctypes", "functools", "select", "shlex", "socket"}
+# Both branches use the interpreter's own standard library (the list on 3.10+, its directories on 3.9) ⇒ what it
+# blocks is exactly what B2 cares about — a **third-party dependency** — never "the names someone predicted". (A
+# hand-written fallback used to stand here; it drifted twice: first missing `select`/`shlex`/`socket`, then
+# blind to every stdlib module scv.py does not use.)
+def _stdlib_names():
+    """The standard library's top-level names. 3.10+ ships the list (`sys.stdlib_module_names`); on 3.9 it is read
+    off the interpreter's own standard-library directories. (The hand-written fallback this replaced knew only
+    scv.py's own modules, so the positive control's `import webbrowser` looked third-party on 3.9 — the first CI
+    run.) Third-party packages live in site-packages, which has no `__init__.py` and is never listed."""
+    names = getattr(sys, "stdlib_module_names", None)
+    if names:
+        return frozenset(names)
+    import pkgutil
+    import sysconfig
+    bases = {sysconfig.get_paths()["stdlib"], sysconfig.get_paths()["platstdlib"]}
+    dirs = [d for b in bases for d in (b, os.path.join(b, "lib-dynload"))] + [os.path.join(sys.base_prefix, "DLLs")]
+    found = {m.name for m in pkgutil.iter_modules([d for d in dirs if os.path.isdir(d)])}
+    return frozenset(found | set(sys.builtin_module_names))
+
+
+STDLIB = _stdlib_names()
 
 # ⭐**Every** module/name scv.py brings in is named here (this is the reading `imported_names()` uses). ⛔One extra
 #   one has to be an explicit decision each time: every other AST gate only recognizes the modules on its own

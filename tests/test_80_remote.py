@@ -1710,16 +1710,20 @@ class Pacing(Case):
 
     WINDOW = 12.0
 
-    def watch(self, patch_min=None, window=None):
-        """Start the bridge -> wait for the first connection -> watch for `window` seconds (default WINDOW). Returns
-        (the log lines from this stretch, the connection count within the window (including the first))."""
+    def watch(self, patch_min=None, window=None, until=None):
+        """Start the bridge -> wait for the first connection -> watch for `window` seconds (default WINDOW), or, with
+        `until`, until that condition holds (`window` is then only the ceiling). Returns (the log lines from this
+        stretch, the connection count within the window (including the first))."""
         box = {}
 
         def run():
             self.b.start_remote()
             self.assertTrue(self.d.wait(lambda: self.d.connects >= 1, timeout=10))
             c0 = self.d.connects
-            time.sleep(window or self.WINDOW)
+            if until is None:
+                time.sleep(window or self.WINDOW)
+            else:
+                self.d.wait(until, timeout=window or self.WINDOW)
             box["n"] = self.d.connects - c0 + 1
 
         if patch_min is None:
@@ -1850,12 +1854,14 @@ class Pacing(Case):
                        #   (> `MIN_REDIAL_S` ⇒ counting from the dial, every pipe would have "lived past" it)
 
     def slow_head_gaps(self):
-        """Start the bridge, watch for 11 seconds ⇒ (log lines, the first three gaps, each with `SLOW_HEAD` seconds
+        """Start the bridge, watch until the 4th stream (at most 30 seconds) ⇒ (log lines, the first three gaps, each with `SLOW_HEAD` seconds
         subtracted for the head reply and rounded to whole seconds).
         ⭐ This judges backoff itself: each round = waiting for the head reply + waiting out backoff (the
           millisecond-scale dial/hello overhead is rounded away). Measured on the dispatcher's side
           (`stream_times`)."""
-        lines, _n = self.watch(window=11.0)
+        # until the 4th stream, never a fixed window: the 4th dial comes ~10.2 s in (1.05 + 1, 2, 4), and a fixed
+        #   11 s window lost it on a slow CI runner (the first CI run saw gaps [1, 2])
+        lines, _n = self.watch(window=30.0, until=lambda: len(self.d.stream_times) >= 4)
         t = self.d.stream_times
         return lines, [round(b - a - self.SLOW_HEAD) for a, b in zip(t, t[1:])][:3]
 

@@ -255,9 +255,19 @@ def _cli_version(raw) -> str:
     ⭐The test is a shape whitelist, never a blacklist that strips out paths: the next new way to leak will not
       send a memo first.
     ⚠️At least two segments (`1.2`): with one segment, any run of digits sitting in a path (`C:/Users/alice/…`)
-      would get reported as a version."""
-    m = CLI_VER_RE.search(str(raw or ""))
-    return m.group(0) if m else ""
+      would get reported as a version.
+    ⚠️Never from inside a path: a directory can carry a version (nvm's `…/v20.11.0/claude.cmd`, a hosted Python's
+      `…/Python/3.12.10/x64/python.exe`), and the failure text quotes the executable — the first CI run reported
+      the runner's Python version as claude's. So a word (split at whitespace, quotes, brackets, commas) holding
+      `/` or a backslash is skipped whole."""
+    text = str(raw or "")
+    for ch in "'" + '"' + "[](),;":
+        text = text.replace(ch, " ")
+    for word in text.split():
+        m = None if ("/" in word or chr(92) in word) else CLI_VER_RE.search(word)
+        if m:
+            return m.group(0)
+    return ""
 
 
 def catalog(cfg: dict, found: dict) -> list:

@@ -2382,7 +2382,9 @@ class PasteInRealShells(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.root = tempfile.mkdtemp(prefix="paste-")
+        # realpath: a runner's temp directory can be an 8.3 short name (`C:/Users/RUNNER~1/…`, the first CI run), and
+        #   `~` needs quoting ⇒ the plain-path cases would skip themselves; the long name is the same directory
+        cls.root = os.path.realpath(tempfile.mkdtemp(prefix="paste-"))
         cls.addClassCleanup(shutil.rmtree, cls.root, True)     # ⭐ cleaned up even if setUpClass blows up partway (tearDownClass would not be called at that point)
         venv = os.path.join(cls.root, "venv")
         subprocess.run([sys.executable, "-m", "venv", "--without-pip", venv], check=True, capture_output=True, timeout=300,
@@ -2470,6 +2472,9 @@ class PasteInRealShells(unittest.TestCase):
         with mock.patch.object(helpers, "git_bash", return_value=None):
             with mock.patch.object(helpers, "run_in_shell", side_effect=lambda sh, *a: ran.append(sh) or real(sh, *a)):
                 type(self)("test_a_plain_program_with_a_quoted_argument").run(result)
+        whole = [why for t, why in result.skipped if type(t).__name__ != "_SubTest"]
+        if whole:                     # the inner case skipped itself for another reason ⇒ nothing here can be judged
+            self.skipTest("the case this one drives skipped itself: " + whole[0])
         self.assertEqual((result.testsRun, result.errors, result.failures), (1, [], []))
         self.assertEqual(ran, ["PowerShell", "cmd"])                                       # the other two shells run as usual
         self.assertEqual([why for _t, why in result.skipped], [helpers.shell_missing("Git Bash", git=None)])

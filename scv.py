@@ -57,10 +57,10 @@ NL = chr(10)
 #   below saying which gate owns it now.
 # 📎 NOTES.md::idiom-block
 # ━━ Settled idioms
-# ⭐Clean up resources with `finally` plus a flag, never `except <a family we recognize>` (scv.py:1979 CodexDriver.__init__)
-# ⭐"Did we do this ourselves" uses an explicit flag, never guessed from the exception type (scv.py:1623 _Pipe._read_failed)
-# ⭐The parent side has exactly one release point for stdout/stderr; the stdin one is the polite close signal (scv.py:1787 _Pipe._close_pipes)
-# ⭐An id from outside never goes into a path, only its hash does (scv.py:2244 SessionManager._workdir)
+# ⭐Clean up resources with `finally` plus a flag, never `except <a family we recognize>` (scv.py:1989 CodexDriver.__init__)
+# ⭐"Did we do this ourselves" uses an explicit flag, never guessed from the exception type (scv.py:1633 _Pipe._read_failed)
+# ⭐The parent side has exactly one release point for stdout/stderr; the stdin one is the polite close signal (scv.py:1797 _Pipe._close_pipes)
+# ⭐An id from outside never goes into a path, only its hash does (scv.py:2254 SessionManager._workdir)
 # ⭐Text from outside is folded to one line at the border where it comes in, never truncated at the border where it goes out (scv.py:307 _one_line)
 # ━━ Retired (pointers spell out the fully qualified name, never a line number: nothing in tests/ watches over line numbers, and line numbers going stale is exactly the lesson from the block above)
 # ⭐The driver layer's failure paths all go through `_fail()` → tests/test_30_drivers.py::NoSilentFailurePath::test_every_raise_in_the_drivers_goes_through_the_logging_door
@@ -1308,9 +1308,19 @@ def _cli_version(raw) -> str:
     ⭐The test is a shape whitelist, never a blacklist that strips out paths: the next new way to leak will not
       send a memo first.
     ⚠️At least two segments (`1.2`): with one segment, any run of digits sitting in a path (`C:/Users/alice/…`)
-      would get reported as a version."""
-    m = CLI_VER_RE.search(str(raw or ""))
-    return m.group(0) if m else ""
+      would get reported as a version.
+    ⚠️Never from inside a path: a directory can carry a version (nvm's `…/v20.11.0/claude.cmd`, a hosted Python's
+      `…/Python/3.12.10/x64/python.exe`), and the failure text quotes the executable — the first CI run reported
+      the runner's Python version as claude's. So a word (split at whitespace, quotes, brackets, commas) holding
+      `/` or a backslash is skipped whole."""
+    text = str(raw or "")
+    for ch in "'" + '"' + "[](),;":
+        text = text.replace(ch, " ")
+    for word in text.split():
+        m = None if ("/" in word or chr(92) in word) else CLI_VER_RE.search(word)
+        if m:
+            return m.group(0)
+    return ""
 
 
 def catalog(cfg: dict, found: dict) -> list:

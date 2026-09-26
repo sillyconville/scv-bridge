@@ -108,6 +108,13 @@ def scv_test_dirs_left():
 
 
 os.mkdir = _guarded_mkdir
+# Python 3.9 / 3.10: pathlib's accessor keeps its own reference to os.mkdir, taken when pathlib is imported ⇒ patching
+#   os.mkdir alone misses `Path.mkdir` when pathlib came first, and binds this function as a method when pathlib came
+#   second (the first CI run on 3.9: the gate never bit, and a TypeError). 3.11+ calls os.mkdir directly.
+import pathlib  # noqa: E402
+
+if hasattr(pathlib, "_NormalAccessor"):
+    pathlib._NormalAccessor.mkdir = staticmethod(_guarded_mkdir)
 
 # ━━ The gate "tests must never dial this machine's real default port" (13b review's isolation "for the later
 #   legs" to use; closed in fix1)
