@@ -90,3 +90,15 @@ Only if the user wants the bridge to take jobs from a remote service and has a p
 ```
 
 Then run the stop and start commands that `pair` prints. Without pairing, a running bridge sends nothing to any outside address; `update` fetches a file from GitHub only when it is run, and the CLIs the bridge starts connect to their own vendors as usual.
+
+## 8. Remember where the bridge is
+
+So that next time the user can just say "start the bridge" (on a later day, in a new session), save one short
+note to whatever you keep across sessions for this user — a memory feature, or a user-level instructions file.
+The note says: the bridge is `scv.py` at `$HOME/.scv/scv.py`, run with the Python from step 1; its subcommands
+`start`, `stop`, `status`, `doctor` and `update` are run as `<python> "$HOME/.scv/scv.py" <subcommand>`; and the
+thin skill for Claude Code, `skill/SKILL.md` in the bridge's repository, maps what the user asks for to one
+subcommand. Write the note with the real Python command from step 1 in place of `<python>`.
+
+Tell the user what you saved and where. If you have no place that lasts across sessions, tell the user so, and
+give them the path above to keep.

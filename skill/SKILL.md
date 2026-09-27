@@ -16,6 +16,7 @@ This file is itself instructions to an agent. If it was installed from a plugin 
 - `<python>`: the same rule as step 1 of setup.md — the first command whose `--version` prints Python 3.9 or newer; in PowerShell try `python`, `py -3`, `python3`; in bash or zsh (Git Bash on Windows included) try `python3`, `python`. If a command offers to install Python or opens an app store, stop and ask the user.
 - `"$HOME/.scv/scv.py"`: where setup.md installs the bridge; keep the double quotes. If the user installed it somewhere else, use that path.
 - Neither setup.md nor `scv.py` puts an `scv` command on `PATH`. When the output of a subcommand prints a command to run next, it contains the full paths for this machine: run that one exactly as printed (where it is printed once per shell, use the line for your shell).
+- If you saved a note about where the bridge is when you set it up (setup.md step 8), use the path and Python from that note.
 
 ## What to run
 

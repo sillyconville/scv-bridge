@@ -28,7 +28,7 @@ def tearDownModule():
     scv.cli_head = _REAL_HEAD
 
 
-CAT = ["claude/haiku", "codex/gpt-5.6-luna"]
+CAT = ["claude/haiku", "codex/gpt-6-luna"]
 
 
 def U(t):
@@ -310,7 +310,7 @@ class Queue(unittest.TestCase):
 # (2) `rebuilt`'s fourth reason, "the model or effort changed", had zero coverage; (3) the three interfaces
 # `close_session` / `gc_idle` / `snapshot` had zero coverage; (4) two timing contracts around concurrency.
 
-CODEX = "codex/gpt-5.6-luna"
+CODEX = "codex/gpt-6-luna"
 CAT2 = CAT + ["claude/sonnet"]
 NL = chr(10)
 

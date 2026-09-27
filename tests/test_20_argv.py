@@ -55,9 +55,9 @@ PLAYER_OVERRIDES = ('developer_instructions=""', "notify=[]", "features.memories
 
 class CodexArgv(unittest.TestCase):
     def test_shape(self):
-        a = scv.codex_argv(["codex"], "gpt-5.6-luna", "low")
+        a = scv.codex_argv(["codex"], "gpt-6-luna", "low")
         self.assertEqual(a[:4], ["codex", "app-server", "--listen", "stdio://"])
-        self.assertIn('model="gpt-5.6-luna"', a)
+        self.assertIn('model="gpt-6-luna"', a)
         self.assertIn('model_reasoning_effort="low"', a)
         self.assertIn("features.shell_tool=false", a)
         for name in scv.CODEX_OFF:
@@ -72,7 +72,7 @@ class CodexArgv(unittest.TestCase):
         for spawning sub-agents (`multi_agent_v2`).
         ⭐Assert the correct value — never just "does not contain his value": get one character of the value
         wrong (`notify=[""]`) and this test must go red."""
-        a = scv.codex_argv(["codex"], "gpt-5.6-luna", "low")
+        a = scv.codex_argv(["codex"], "gpt-6-luna", "low")
         settings = [a[i + 1] for i, x in enumerate(a[:-1]) if x == "-c"]
         for want in PLAYER_OVERRIDES:
             self.assertIn(want, settings)
@@ -88,12 +88,12 @@ class CodexArgv(unittest.TestCase):
           turns off skills without suppressing the manifest, the manifest still goes into the request) ⇒ the
           manifest field moved into that same table in thread/start.
         Both are now pinned by tests/test_30_drivers.py::CodexUserStuffIsTurnedOff."""
-        a = scv.codex_argv(["codex"], "gpt-5.6-luna", "low")
+        a = scv.codex_argv(["codex"], "gpt-6-luna", "low")
         self.assertEqual([x for x in a if x.startswith(("mcp_servers", "skills."))], [])
 
 
 class ClosedSet(unittest.TestCase):
-    CAT = ["claude/haiku", "claude/sonnet", "codex/gpt-5.6-luna"]
+    CAT = ["claude/haiku", "claude/sonnet", "codex/gpt-6-luna"]
 
     def test_known_model_resolves(self):
         self.assertEqual(scv.resolve_model("claude/sonnet", self.CAT), ("claude", "sonnet"))
@@ -234,7 +234,7 @@ class SafeModeGate(_StubEnv):
         found, cat = _cat()
         self.assertIn("--safe-mode", found["claude"]["blocked"])        # pins down why it was refused
         self.assertEqual([m for m in cat if m.startswith("claude/")], [])
-        self.assertIn("codex/gpt-5.6-luna", cat)                        # refuse only this family, never implicate the other
+        self.assertIn("codex/gpt-6-luna", cat)                        # refuse only this family, never implicate the other
 
     def test_blocked_family_still_reports_itself(self):
         """A refused family must never disappear from detect(): doctor needs its version number to tell the user
@@ -368,7 +368,7 @@ class CodexLoginGate(_StubEnv):
         implementation that is always blocked would also be all green."""
         found, cat = _cat()
         self.assertEqual(found["codex"]["blocked"], "")
-        self.assertIn("codex/gpt-5.6-luna", cat)
+        self.assertIn("codex/gpt-6-luna", cat)
 
     def test_the_command_names_the_binary_we_actually_found(self):
         """🔴Measured on this machine: `codex` is not on PATH at all (scv found it through that
@@ -924,9 +924,9 @@ class CodexArgvPairs(unittest.TestCase):
         return [a[i + 1] for i, x in enumerate(a[:-1]) if x == "-c"]
 
     def test_every_setting_is_introduced_by_dash_c(self):
-        a = scv.codex_argv(["codex"], "gpt-5.6-luna", "high")
+        a = scv.codex_argv(["codex"], "gpt-6-luna", "high")
         settings = self._settings(a)
-        self.assertIn('model="gpt-5.6-luna"', settings)
+        self.assertIn('model="gpt-6-luna"', settings)
         self.assertIn('model_reasoning_effort="high"', settings)
         self.assertIn('web_search="disabled"', settings)
         # Task 13c: the entries layered on top of the player's own config.toml — the expected value is read only
@@ -944,20 +944,20 @@ class CodexArgvPairs(unittest.TestCase):
         """B11: this tool is always off. Pin it on its own, never rely on the CODEX_OFF list happening to still
         carry it."""
         self.assertIn("shell_tool", scv.CODEX_OFF)
-        self.assertIn("features.shell_tool=false", self._settings(scv.codex_argv(["c"], "gpt-5.6-luna", "low")))
+        self.assertIn("features.shell_tool=false", self._settings(scv.codex_argv(["c"], "gpt-6-luna", "low")))
 
     def test_effort_defaults_to_low_and_is_closed(self):
         for empty in (None, ""):               # both kinds of "not said" fall through to the default tier
             self.assertIn('model_reasoning_effort="low"',
-                          self._settings(scv.codex_argv(["c"], "gpt-5.6-luna", empty)))
+                          self._settings(scv.codex_argv(["c"], "gpt-6-luna", empty)))
         for bad in ("LOW", "low; rm -rf /", "ultra", "low medium"):
             with self.assertRaises(scv.BridgeError) as cm:
-                scv.codex_argv(["c"], "gpt-5.6-luna", bad)
+                scv.codex_argv(["c"], "gpt-6-luna", bad)
             self.assertEqual(cm.exception.klass, "bad_request")
 
     def test_head_is_copied_not_aliased(self):
         head = ["codex"]
-        scv.codex_argv(head, "gpt-5.6-luna", "low")
+        scv.codex_argv(head, "gpt-6-luna", "low")
         scv.claude_argv(head, "haiku", "S", "I")
         self.assertEqual(head, ["codex"])      # the caller's own copy must never be modified in place
 
@@ -1159,10 +1159,10 @@ class CatalogEdges(unittest.TestCase):
         """⭐This is a real injection surface: a name in `extra_models` carrying a `/` would make resolve_model's
         partition split in the wrong place, conjuring up an extra "family" out of nowhere. MODEL_RE does not
         accept `/`; this pins that down."""
-        cfg = {"extra_models": {"claude": ["codex/gpt-5.6-sol", "a/b", "..", "../../etc/passwd"]}}
+        cfg = {"extra_models": {"claude": ["codex/gpt-6-sol", "a/b", "..", "../../etc/passwd"]}}
         cat = scv.catalog(cfg, self.FOUND)
         self.assertEqual([m for m in cat if m.count("/") != 1], [])
-        self.assertNotIn("claude/codex/gpt-5.6-sol", cat)
+        self.assertNotIn("claude/codex/gpt-6-sol", cat)
 
     def test_non_strings_are_dropped_not_crashed(self):
         cfg = {"extra_models": {"claude": [None, 7, {"a": 1}, ["x"], "fable"]}}
@@ -1341,6 +1341,25 @@ class ProbesStayUnderTheProbeBudget(_StubEnv):
         self.assertTrue(is_probe(ast.parse("run_cli(a, family=None, timeout=99)").body[0].value))
         self.assertFalse(is_probe(ast.parse("run_cli(a, family='claude', timeout=99)").body[0].value))
         self.assertTrue(is_probe(ast.parse("run_cli(a, timeout=99)").body[0].value))
+
+
+class CodexDefaults(unittest.TestCase):
+    """0.2.0 (the maintainer's decision, 2026-09-27): the Codex family's default models are the service's own
+    subscription seats (gpt-6-luna / gpt-5.6-terra / gpt-6-sol).
+    The first one is the call `doctor --live` and the service's check make, so it must be the cheapest (luna).
+    The same day the maintainer asked for the bridge to find local models by itself; this table is a stopgap,
+    so do not write it down anywhere else."""
+
+    def test_codex_catalog_is_the_services_set(self):
+        self.assertEqual(scv.catalog({}, {"codex": {}}),
+                         ["codex/gpt-6-luna", "codex/gpt-5.6-terra", "codex/gpt-6-sol"])
+
+    def test_the_old_names_are_still_reachable_through_extra_models(self):
+        cat = scv.catalog({"extra_models": {"codex": ["gpt-5.6-luna"]}}, {"codex": {}})
+        self.assertIn("codex/gpt-5.6-luna", cat)
+
+    def test_version(self):
+        self.assertEqual(scv.VERSION, "0.2.0")
 
 
 if __name__ == "__main__":

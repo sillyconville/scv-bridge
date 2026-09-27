@@ -1264,7 +1264,7 @@ class Codex(_Staged):
       sending one `user` message is the whole story; here `__init__` has a whole extra stretch of handshaking
       (`initialize` -> `initialized` -> `thread/start`), an entire extra family of failure paths."""
 
-    MODEL = "gpt-5.6-luna"     # real CLI probes always use the cheap tier
+    MODEL = "gpt-6-luna"     # real CLI probes always use the cheap tier
 
     def test_two_turns_stay_on_one_thread(self):
         mark = len(helpers.read_fake_log())
@@ -1624,7 +1624,7 @@ class CodexRetry401(_Staged):
     review probes (S2/S3/S4/S6) covering the two shapes times two vehicles plus the "succeeds despite a 401"
     case."""
 
-    MODEL = "gpt-5.6-luna"
+    MODEL = "gpt-6-luna"
 
     def turn_fails(self, tag, **extra):
         mode("retry_then_fail", **extra)

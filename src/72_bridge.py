@@ -1,3 +1,70 @@
+ES_SYSTEM_REQUIRED = 0x00000001     # SetThreadExecutionState: reset the system idle timer once (⛔ never ES_CONTINUOUS: that one sticks to the calling thread)
+AWAKE_EVERY_S = 30                  # how often the main loop asks; far below any sleep timeout Windows offers (1 minute is the shortest)
+
+
+class KeepAwake:
+    """While the remote leg has a job running, or had one end less than `window_s` ago, keep resetting Windows'
+    system idle timer so the machine does not fall asleep in the middle of someone's game (maintainer 2026-09-27:
+    the bridge runs on a desktop at home while the player plays on a phone — a desktop that sleeps pauses the game,
+    and nobody can wake it from the phone).
+    ⭐Only the system idle timer, once per tick (ES_SYSTEM_REQUIRED alone): the display may still turn off, and
+      nothing is left behind when the bridge stops. ⛔never ES_CONTINUOUS: it sticks to the calling thread.
+    ⭐The tail (`window_s` after the last job) covers the gaps inside one game: the player's own turn, a pause
+      waiting for a login. A machine that is already asleep when a game starts cannot be helped from here.
+    POSIX: a no-op (not measured; left to the POSIX pass)."""
+
+    def __init__(self, window_s: float, poke=None, clock=time.time):
+        self.window_s = float(window_s)
+        self._poke = poke if poke is not None else _poke_idle_timer
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._busy = 0
+        self._last = None                 # when the last job ended; None = none yet
+        self.pokes = 0
+
+    def begin(self) -> None:
+        with self._lock:
+            self._busy += 1
+
+    def end(self) -> None:
+        with self._lock:
+            self._busy = max(0, self._busy - 1)
+            self._last = self._clock()
+
+    def wanted(self) -> bool:
+        if self.window_s <= 0:
+            return False
+        with self._lock:
+            return self._busy > 0 or (self._last is not None and self._clock() - self._last < self.window_s)
+
+    def tick(self) -> bool:
+        """Called by the main loop every `AWAKE_EVERY_S`. Returns whether it asked Windows to stay awake."""
+        if not self.wanted():
+            return False
+        try:
+            self._poke()
+        except Exception as e:           # never let this take the bridge down: it is a convenience, not the job
+            log("⚠️ could not ask the system to stay awake: %s: %s" % (type(e).__name__, _one_line(e)))
+            return False
+        self.pokes += 1
+        return True
+
+
+def _poke_idle_timer() -> None:
+    if sys.platform == "win32":
+        _k32().SetThreadExecutionState(ES_SYSTEM_REQUIRED)
+
+
+def _awake_window(v) -> float:
+    """config.json's `keep_awake_s`: missing ⇒ 600; a number ≥ 0 ⇒ that; anything else ⇒ 600, said once."""
+    if v is None:
+        return 600.0
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
+        return float(v)
+    log("⚠️ config.json's keep_awake_s is not a number ≥ 0 (it is %r) ⇒ using 600" % (v,))
+    return 600.0
+
+
 class Bridge:
     """A bridge = one config + one detection pass + a session manager + an audit log + a local HTTP leg.
     ⚠️`found`/`cat` are detected at the moment the bridge starts: if the user runs `codex login` after starting the
@@ -11,6 +78,8 @@ class Bridge:
         self.cat = catalog(cfg, self.found)
         self.sessions = SessionManager(cfg, lambda: self.cat)
         self.joblog = JobLog()
+        # 0.2.0: `keep_awake_s` — how long after the last remote job the machine is kept awake (0 = off)
+        self.awake = KeepAwake(_awake_window(cfg.get("keep_awake_s")))
         self.started_at = time.time()
         self.httpd = None
         self.remote = None                 # assigned only in Task 11

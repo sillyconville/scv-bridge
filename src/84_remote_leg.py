@@ -574,6 +574,7 @@ class RemoteLeg:
         #   those permanently mute this leg, while the reason given to the outside world is the lie "already at
         #   the in-flight cap". ⭐"no matter which family of exception flew" is a guarantee the structure gives,
         #   never just a wish ⇒ the gate is built to the shape of the bug: `test_any_failure_still_returns_the_slot`.
+        self.b.awake.begin()        # 0.2.0 KeepAwake: paired with the `end()` in this try's finally (every path passes through it)
         try:
             try:
                 per_hour_cfg = self.b.cfg.get("remote_jobs_per_hour")
@@ -624,6 +625,7 @@ class RemoteLeg:
             finally:
                 self._cancels.pop(jid, None)
                 self._inflight.release()
+                self.b.awake.end()
                 self.b.joblog.write(leg="remote", model=shown_model(job.get("model"), self.b.cat), klass=klass, job_id=jid,
                                     cli_version=self.b.cli_ver(job.get("model")), usage=res.get("usage") or {},
                                     latency_s=round(time.time() - t0, 2), ttfc=res.get("ttfc"),

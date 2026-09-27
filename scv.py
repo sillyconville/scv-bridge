@@ -39,11 +39,11 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 PROTOCOL = 1
 MIN_PY = (3, 9)
-LINE_BUDGET = 5450      # ⭐the line count is only a proxy metric: auditability is guaranteed by those AST gates,
-#                         never by this number. Why 5450, and why the old 2000/3000/3800/4300/4400/4500/4600/5600/5400 no
+LINE_BUDGET = 5500      # ⭐the line count is only a proxy metric: auditability is guaranteed by those AST gates,
+#                         never by this number. Why 5500, and why the old 2000/3000/3800/4300/4400/4500/4600/5600/5400/5450 no
 #                         longer hold ⇒ tests/test_00_budget.py::Budget::test_line_budget's docstring;
 #                         📎 NOTES.md::line-budget-3000
 NL = chr(10)
@@ -57,10 +57,10 @@ NL = chr(10)
 #   below saying which gate owns it now.
 # 📎 NOTES.md::idiom-block
 # ━━ Settled idioms
-# ⭐Clean up resources with `finally` plus a flag, never `except <a family we recognize>` (scv.py:1989 CodexDriver.__init__)
-# ⭐"Did we do this ourselves" uses an explicit flag, never guessed from the exception type (scv.py:1633 _Pipe._read_failed)
-# ⭐The parent side has exactly one release point for stdout/stderr; the stdin one is the polite close signal (scv.py:1797 _Pipe._close_pipes)
-# ⭐An id from outside never goes into a path, only its hash does (scv.py:2254 SessionManager._workdir)
+# ⭐Clean up resources with `finally` plus a flag, never `except <a family we recognize>` (scv.py:1992 CodexDriver.__init__)
+# ⭐"Did we do this ourselves" uses an explicit flag, never guessed from the exception type (scv.py:1636 _Pipe._read_failed)
+# ⭐The parent side has exactly one release point for stdout/stderr; the stdin one is the polite close signal (scv.py:1800 _Pipe._close_pipes)
+# ⭐An id from outside never goes into a path, only its hash does (scv.py:2257 SessionManager._workdir)
 # ⭐Text from outside is folded to one line at the border where it comes in, never truncated at the border where it goes out (scv.py:307 _one_line)
 # ━━ Retired (pointers spell out the fully qualified name, never a line number: nothing in tests/ watches over line numbers, and line numbers going stale is exactly the lesson from the block above)
 # ⭐The driver layer's failure paths all go through `_fail()` → tests/test_30_drivers.py::NoSilentFailurePath::test_every_raise_in_the_drivers_goes_through_the_logging_door
@@ -139,7 +139,7 @@ class BridgeError(Exception):
 
 DEFAULT_CONFIG = {"port": 8765, "max_concurrent": 4, "remote_url": "", "remote_token": "",
                   "remote_jobs_per_hour": 600, "allowed_origins": [], "claude_bin": "", "codex_bin": "",
-                  "extra_models": {"claude": [], "codex": []}}
+                  "keep_awake_s": 600, "extra_models": {"claude": [], "codex": []}}
 
 _cfg_lock = threading.RLock()   # reentrant: the path that mints a token re-enters save_config() once more
 
@@ -523,7 +523,7 @@ def kill_tree(proc: subprocess.Popen) -> None:
 BIRTH_WIN = "ft:"          # win32 birth id prefix: creation FILETIME. ⚠️old versions wrote .NET Ticks (no prefix) ⇒ see `birth_known`
 _WIN_ERROR_INVALID_PARAMETER, _WIN_EXITED, _WIN_STILL_RUNNING = 87, 0, 0x102
 _WIN_QUERY, _WIN_SYNC, _WIN_VM_READ = 0x1000, 0x00100000, 0x0010
-# ⭐`_k32()` hands out only these five functions, never the whole of kernel32: kernel32 itself also has
+# ⭐`_k32()` hands out only these six functions, never the whole of kernel32: kernel32 itself also has
 #   CreateProcessW / CreateFileW / LoadLibraryW / GetProcAddress (start a process, write to disk, load another
 #   DLL) — handing out the whole object would open a door right next to the child-process gate and the disk gate.
 #   🔴But this is a door against slipping, never against a deliberate bypass: every ctypes function object holds
@@ -532,8 +532,10 @@ _WIN_QUERY, _WIN_SYNC, _WIN_VM_READ = 0x1000, 0x00100000, 0x0010
 #   tests/test_00_budget.py::Budget::test_native_code_has_one_door goes red; reaching for a private attribute like
 #   `_objects` ⇒ tests/test_00_budget.py::Budget::test_no_private_attribute_is_reached_off_self goes red; a
 #   string-built reflection has no gate at all.
+#   SetThreadExecutionState (0.2.0, KeepAwake): only ever called with ES_SYSTEM_REQUIRED alone — resets the idle
+#   timer once, leaves no state behind.
 _K32 = collections.namedtuple("_K32", "OpenProcess GetProcessTimes WaitForSingleObject K32GetProcessMemoryInfo "
-                                      "CloseHandle")
+                                      "CloseHandle SetThreadExecutionState")
 
 
 class _WinMem(ctypes.Structure):
@@ -547,7 +549,7 @@ def _k32():
     """⚠️Every function needs its `argtypes`/`restype` written out: the default `c_int` truncates a 64-bit handle
     (Task 11's resource survey hit `handles: -1` once because of this). Load our own `WinDLL`, never the shared
     `ctypes.windll`: changing a signature on that one changes it for everyone else too.
-    🔴The one and only place in the whole file that loads native code, and it returns a `_K32` (five functions),
+    🔴The one and only place in the whole file that loads native code, and it returns a `_K32` (six functions),
     never the DLL object itself — the reason is in the `_K32` line above."""
     dll = ctypes.WinDLL("kernel32", use_last_error=True)
     dll.OpenProcess.argtypes, dll.OpenProcess.restype = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32], ctypes.c_void_p
@@ -558,8 +560,9 @@ def _k32():
     dll.K32GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(_WinMem), ctypes.c_uint32]
     dll.K32GetProcessMemoryInfo.restype = ctypes.c_int
     dll.CloseHandle.argtypes, dll.CloseHandle.restype = [ctypes.c_void_p], ctypes.c_int
+    dll.SetThreadExecutionState.argtypes, dll.SetThreadExecutionState.restype = [ctypes.c_uint32], ctypes.c_uint32
     return _K32(dll.OpenProcess, dll.GetProcessTimes, dll.WaitForSingleObject, dll.K32GetProcessMemoryInfo,
-                dll.CloseHandle)
+                dll.CloseHandle, dll.SetThreadExecutionState)
 
 
 def _win_ask(pid: int, access: int, fn):
@@ -911,7 +914,7 @@ def run_cli(argv: list, input: bytes | None = None, cwd=None, timeout=None, env=
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 CLAUDE_MODELS = ("haiku", "sonnet", "opus")
-CODEX_MODELS = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol")
+CODEX_MODELS = ("gpt-6-luna", "gpt-5.6-terra", "gpt-6-sol")    # 0.2.0: the service's own subscription seats (maintainer, 2026-09-27); next: find local models by themselves
 EFFORTS = ("low", "medium", "high")
 MODEL_RE = re.compile("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 CODEX_GLOB = "OpenAI/Codex/bin/*/codex.exe"
@@ -2913,6 +2916,73 @@ class _Server(ThreadingHTTPServer):
     allow_reuse_address = os.name != "nt"
 
 
+ES_SYSTEM_REQUIRED = 0x00000001     # SetThreadExecutionState: reset the system idle timer once (⛔ never ES_CONTINUOUS: that one sticks to the calling thread)
+AWAKE_EVERY_S = 30                  # how often the main loop asks; far below any sleep timeout Windows offers (1 minute is the shortest)
+
+
+class KeepAwake:
+    """While the remote leg has a job running, or had one end less than `window_s` ago, keep resetting Windows'
+    system idle timer so the machine does not fall asleep in the middle of someone's game (maintainer 2026-09-27:
+    the bridge runs on a desktop at home while the player plays on a phone — a desktop that sleeps pauses the game,
+    and nobody can wake it from the phone).
+    ⭐Only the system idle timer, once per tick (ES_SYSTEM_REQUIRED alone): the display may still turn off, and
+      nothing is left behind when the bridge stops. ⛔never ES_CONTINUOUS: it sticks to the calling thread.
+    ⭐The tail (`window_s` after the last job) covers the gaps inside one game: the player's own turn, a pause
+      waiting for a login. A machine that is already asleep when a game starts cannot be helped from here.
+    POSIX: a no-op (not measured; left to the POSIX pass)."""
+
+    def __init__(self, window_s: float, poke=None, clock=time.time):
+        self.window_s = float(window_s)
+        self._poke = poke if poke is not None else _poke_idle_timer
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._busy = 0
+        self._last = None                 # when the last job ended; None = none yet
+        self.pokes = 0
+
+    def begin(self) -> None:
+        with self._lock:
+            self._busy += 1
+
+    def end(self) -> None:
+        with self._lock:
+            self._busy = max(0, self._busy - 1)
+            self._last = self._clock()
+
+    def wanted(self) -> bool:
+        if self.window_s <= 0:
+            return False
+        with self._lock:
+            return self._busy > 0 or (self._last is not None and self._clock() - self._last < self.window_s)
+
+    def tick(self) -> bool:
+        """Called by the main loop every `AWAKE_EVERY_S`. Returns whether it asked Windows to stay awake."""
+        if not self.wanted():
+            return False
+        try:
+            self._poke()
+        except Exception as e:           # never let this take the bridge down: it is a convenience, not the job
+            log("⚠️ could not ask the system to stay awake: %s: %s" % (type(e).__name__, _one_line(e)))
+            return False
+        self.pokes += 1
+        return True
+
+
+def _poke_idle_timer() -> None:
+    if sys.platform == "win32":
+        _k32().SetThreadExecutionState(ES_SYSTEM_REQUIRED)
+
+
+def _awake_window(v) -> float:
+    """config.json's `keep_awake_s`: missing ⇒ 600; a number ≥ 0 ⇒ that; anything else ⇒ 600, said once."""
+    if v is None:
+        return 600.0
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
+        return float(v)
+    log("⚠️ config.json's keep_awake_s is not a number ≥ 0 (it is %r) ⇒ using 600" % (v,))
+    return 600.0
+
+
 class Bridge:
     """A bridge = one config + one detection pass + a session manager + an audit log + a local HTTP leg.
     ⚠️`found`/`cat` are detected at the moment the bridge starts: if the user runs `codex login` after starting the
@@ -2926,6 +2996,8 @@ class Bridge:
         self.cat = catalog(cfg, self.found)
         self.sessions = SessionManager(cfg, lambda: self.cat)
         self.joblog = JobLog()
+        # 0.2.0: `keep_awake_s` — how long after the last remote job the machine is kept awake (0 = off)
+        self.awake = KeepAwake(_awake_window(cfg.get("keep_awake_s")))
         self.started_at = time.time()
         self.httpd = None
         self.remote = None                 # assigned only in Task 11
@@ -4404,6 +4476,7 @@ class RemoteLeg:
         #   those permanently mute this leg, while the reason given to the outside world is the lie "already at
         #   the in-flight cap". ⭐"no matter which family of exception flew" is a guarantee the structure gives,
         #   never just a wish ⇒ the gate is built to the shape of the bug: `test_any_failure_still_returns_the_slot`.
+        self.b.awake.begin()        # 0.2.0 KeepAwake: paired with the `end()` in this try's finally (every path passes through it)
         try:
             try:
                 per_hour_cfg = self.b.cfg.get("remote_jobs_per_hour")
@@ -4454,6 +4527,7 @@ class RemoteLeg:
             finally:
                 self._cancels.pop(jid, None)
                 self._inflight.release()
+                self.b.awake.end()
                 self.b.joblog.write(leg="remote", model=shown_model(job.get("model"), self.b.cat), klass=klass, job_id=jid,
                                     cli_version=self.b.cli_ver(job.get("model")), usage=res.get("usage") or {},
                                     latency_s=round(time.time() - t0, 2), ttfc=res.get("ttfc"),
@@ -4768,8 +4842,11 @@ def serve_until(bridge, stop: threading.Event) -> None:
     """`scv run`'s main loop: reclaims idle sessions on the clock (A6). ⭐Wakes every 0.5s, never `wait(60)`: on
     win32, when the main thread is stuck in a long wait, Ctrl+C only gets handled once it wakes up (⏳this is
     written to CPython's known behaviour, not measured on this machine)."""
-    last = time.time()
+    last = poked = time.time()
     while not stop.wait(0.5):
+        if time.time() - poked >= AWAKE_EVERY_S:
+            poked = time.time()
+            bridge.awake.tick()
         if time.time() - last >= GC_EVERY_S:
             last = time.time()
             try:

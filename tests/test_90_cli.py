@@ -472,7 +472,7 @@ class ChildProcessesNeverSeeTheSession(_Staged):
         env = dict({n: "fake-" + n.lower() for n in self.FAKE}, FAKE_ENV_NAMES="1", CLAUDE_CODE_GIT_BASH_PATH="his-own")
         with mock.patch.dict(os.environ, env):
             scv.doctor_facts(scv.load_config(), live=False)
-            for fam, model in (("claude", "haiku"), ("codex", "gpt-5.6-luna")):
+            for fam, model in (("claude", "haiku"), ("codex", "gpt-6-luna")):
                 wd = scv.spath("work/no-session-" + fam)
                 wd.mkdir(exist_ok=True)
                 scv.make_driver(scv.load_config(), fam, model, None, "s", wd).close()
@@ -1630,6 +1630,23 @@ class GcByTheClock(_Staged):
             t.join(10)
             scv.GC_EVERY_S = old
 
+    def test_the_main_loop_keeps_the_machine_awake(self):
+        """0.2.0 KeepAwake: the one place that pokes is the main loop, every `AWAKE_EVERY_S` — `KeepAwake` itself
+        decides whether a poke is wanted. Without this wiring the remote leg's begin/end would count for nothing."""
+        b = mock.Mock()
+        b.sessions.gc_idle.return_value = 0
+        stop = threading.Event()
+        old, scv.AWAKE_EVERY_S = scv.AWAKE_EVERY_S, 0.1
+        t = threading.Thread(target=scv.serve_until, args=(b, stop), daemon=True)
+        try:
+            t.start()
+            time.sleep(1.8)
+            self.assertGreaterEqual(b.awake.tick.call_count, 2)
+        finally:
+            stop.set()
+            t.join(10)
+            scv.AWAKE_EVERY_S = old
+
 
 # ━━ The ones that start a subprocess (really running `python scv.py start`)
 class Lifecycle(_Staged):
@@ -2428,7 +2445,7 @@ class PasteInRealShells(unittest.TestCase):
                         text = scv.self_cmd("version")
                 # only the cell with `%` in it is never given to cmd (positive control: every other cell is given
                 #   to cmd too, and really runs through)
-                self.assertEqual(self.runs_everywhere(text, "0.1.0"), ["cmd"] if "%" in name else [], text)
+                self.assertEqual(self.runs_everywhere(text, scv.VERSION), ["cmd"] if "%" in name else [], text)
 
     def test_a_plain_program_with_a_quoted_argument(self):
         """The leading word carries no quotes, but the ones after it do (the `git diff` case, `python.exe` in a plain
@@ -2443,7 +2460,7 @@ class PasteInRealShells(unittest.TestCase):
         d = os.path.join(self.root, "with space 中文")
         text = scv.paste_cmd([exe, os.path.join(d, "scv.py"), "version"])
         self.assertFalse(helpers.pasted_for(text, "PowerShell").startswith("&"), text)
-        self.assertEqual(self.runs_everywhere(text, "0.1.0"), [])
+        self.assertEqual(self.runs_everywhere(text, scv.VERSION), [])
 
     def test_the_codex_login_line_runs_in_every_shell(self):
         """`login_cmd` goes through the same door (13c review M3: Git Bash used to be unable to paste it); once the
@@ -2501,7 +2518,7 @@ class PasteInRealShells(unittest.TestCase):
                 if helpers.shell_missing(shell):
                     self.skipTest(helpers.shell_missing(shell))
                 out = helpers.run_in_shell(shell, line, self.root).stdout.decode("utf-8", "replace")
-                self.assertEqual("0.1.0" in out or "codex-got" in out, runs, line + NL + out)
+                self.assertEqual(scv.VERSION in out or "codex-got" in out, runs, line + NL + out)
 
 
 # ━━ main (C15/B10/E19)

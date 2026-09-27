@@ -64,7 +64,7 @@ Everything goes under one state directory: `$SCV_HOME` if it is set, otherwise `
 
 **Outside the state directory** it writes one thing: `update` replaces `scv.py` itself, through a temporary `scv.py.new` next to it that is removed if the replacement fails. If you installed with setup.md (`$HOME/.scv/scv.py`) and `SCV_HOME` is not set, that is usually the state directory itself, so `scv.py` and, during an update, `scv.py.new` sit there too without going through `spath()`. (Python takes "your home directory" from `USERPROFILE` on Windows; Git Bash's `$HOME` can differ if you changed `HOME`.)
 
-`config.json` keys: `port`, `max_concurrent`, `remote_url`, `remote_token`, `remote_jobs_per_hour`, `allowed_origins`, `claude_bin`, `codex_bin`, `extra_models`, `local_token`.
+`config.json` keys: `port`, `max_concurrent`, `remote_url`, `remote_token`, `remote_jobs_per_hour`, `allowed_origins`, `claude_bin`, `codex_bin`, `keep_awake_s`, `extra_models`, `local_token`.
 
 **Files it reads outside the state directory:** `scv.py` itself, during `update`. It also checks, without opening them, whether the CLI executables exist and how large `AGENTS.override.md` and `AGENTS.md` in your Codex home are; with `doctor --live`, also the size of each file Codex says it loaded. It does not read any credential file.
 
@@ -183,6 +183,11 @@ Codex runs with your own Codex home and your own login. To make the bridge's Cod
 
 - **Measured on Windows only.** Every process and network reading behind this file was taken on Windows 11 with Python 3.12. The macOS and Linux code paths (process groups, signals, `ps`) are written but not measured, and CI runs the tests on Windows only (Python 3.9 and 3.12) until they are.
 - **Detach.** On Windows, `start` launches the bridge with `CREATE_NO_WINDOW`, `CREATE_NEW_PROCESS_GROUP` and `CREATE_BREAKAWAY_FROM_JOB`. A bridge started this way was still answering after each of: closing its pseudo console (`ClosePseudoConsole`, which is what Windows Terminal and VS Code use when a tab is closed; not measured inside those two programs), closing a classic console window, `taskkill /T /F` on the shell's process tree, and the end of the Claude Code Bash tool call that started it. A bridge run in the foreground (the `run` subcommand) died in the first three. Inside a Windows Job that forbids breakaway, `start` prints a warning that the bridge may exit with the terminal, and it did exit when the Job was closed. Not measured: closing a whole Claude Code session, Codex as the harness, macOS and Linux (where `start` uses `start_new_session`).
+- **Keeping the machine awake.** While the remote leg has a job running, and for `keep_awake_s` seconds (600 by
+  default; `0` turns it off) after the last one ends, the bridge asks Windows every 30 seconds to reset its idle
+  timer (`SetThreadExecutionState(ES_SYSTEM_REQUIRED)`, never `ES_CONTINUOUS`). It does not keep the display on,
+  and a machine that is already asleep when a game starts cannot be woken from here. Not implemented on macOS or
+  Linux.
 - **Codex: a request when a session starts.** When Codex starts a session (`thread/start`), it connects to `wss://chatgpt.com/backend-api/codex/responses` with your login and gets a response id back, without producing text (seen in Codex's own log database, with a ChatGPT login). No setting to turn this off was found; whether it counts against your quota is not known. The bridge starts a Codex session only for a real request (including rebuilding a session) and for `doctor --live` or `setup --live`; `start`, `status`, `token`, `doctor`, `setup` and `stop` start none (`tests/test_90_cli.py::Lifecycle::test_zero_quota_commands_start_no_session`).
 - **A client that hangs up.** While it waits for the first piece of an answer, and during the whole of a non-streaming call, the bridge checks every 2 seconds whether the client is still connected. Once a stream has started, it notices at the next write: a piece of text, or a keep-alive comment every 10 seconds. Noticing cancels the turn; a CLI process already working on it is killed.
 - **Checked once, at start.** When the bridge starts, it looks for the CLIs, checks that Claude Code knows `--safe-mode`, and checks whether Codex has local credentials; Claude Code's login state is not checked then. After installing a CLI or logging Codex in, stop and start the bridge.
@@ -214,7 +219,7 @@ There are two ways in: `setup.md`, written for an agent in any harness, and `ski
 
 Base URL `http://127.0.0.1:<port>/v1`; the API key is the local token. `setup` prints the base URL and the command that prints the token.
 
-**`GET /v1/models`** lists `claude/<model>` and `codex/<model>` for each family that is found and not blocked: `claude/haiku`, `claude/sonnet`, `claude/opus`, `codex/gpt-5.6-luna`, `codex/gpt-5.6-terra`, `codex/gpt-5.6-sol`, plus the names in `extra_models`. Each entry has only `id`, `object`, `created` and `owned_by`.
+**`GET /v1/models`** lists `claude/<model>` and `codex/<model>` for each family that is found and not blocked: `claude/haiku`, `claude/sonnet`, `claude/opus`, `codex/gpt-6-luna`, `codex/gpt-5.6-terra`, `codex/gpt-6-sol`, plus the names in `extra_models`. Each entry has only `id`, `object`, `created` and `owned_by`.
 
 **`POST /v1/chat/completions`** — request parameters:
 

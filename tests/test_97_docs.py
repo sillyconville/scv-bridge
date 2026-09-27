@@ -1406,5 +1406,25 @@ class SkillMd(unittest.TestCase):
         self.assertEqual(health["families"], {"codex": {"version": "1.2.3", "blocked": True}})
 
 
+class RememberStep(unittest.TestCase):
+    """0.2.0 (the maintainer, 2026-09-27: "otherwise it cannot be found next time"): setup.md's last step has the
+    agent save where the bridge is installed and how to run it, in whatever it keeps across sessions.
+    ⛔This step has no command block (it runs nothing, so it never enters the run-every-block gate); ⛔it never
+    decides for the user (it tells the user what it saved and where)."""
+
+    def setUp(self):
+        self.sec = section(read(SETUP), "8. Remember where the bridge is")
+
+    def test_step_8_exists_and_names_what_to_remember(self):
+        for must in ("$HOME/.scv/scv.py", "start", "stop", "status", "skill/SKILL.md"):
+            self.assertIn(must, self.sec, must)
+
+    def test_step_8_runs_nothing(self):
+        self.assertNotIn("```", self.sec)
+
+    def test_step_8_tells_the_user(self):
+        self.assertRegex(self.sec, r"[Tt]ell the user")
+
+
 if __name__ == "__main__":
     unittest.main()

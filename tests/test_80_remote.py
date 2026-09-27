@@ -662,7 +662,7 @@ class NoLocalPathsLeave(Case):
     def test_codex_dying_during_the_handshake_does_not_ship_the_home_in_its_stderr(self):
         os.environ["FAKE_MODE"] = "home_stderr_exit"
         self.b.start_remote()
-        self.d.push("job", job("np2", "甲", model="codex/gpt-5.6-luna"))
+        self.d.push("job", job("np2", "甲", model="codex/gpt-6-luna"))
         self.assertTrue(self.d.wait(self.terminal("np2")))
         msg = self.events("np2")[-1]["error"]["message"]
         self.assertEqual(self.leaks(msg), [], msg)
@@ -1257,7 +1257,7 @@ class SendChannel(Case):
         os.environ["FAKE_START_DELAY"] = "1"
         self.addCleanup(os.environ.pop, "FAKE_START_DELAY", None)
         self.b.start_remote()
-        self.d.push("job", job("st-cli", "甲", session="room-st", model="codex/gpt-5.6-luna"))
+        self.d.push("job", job("st-cli", "甲", session="room-st", model="codex/gpt-6-luna"))
         self.assertTrue(self.d.wait(lambda: any(e["event"] == "started" for e in self.events("st-cli"))))
         self.d.push("close_session", {"session": "room-st"})
         self.assertTrue(self.d.wait(self.terminal("st-cli"), timeout=30))
@@ -2299,6 +2299,37 @@ class Redirects(unittest.TestCase):
         lines = self.run_until(lambda: self.hits_a["/bridge/stream"] >= 2)
         self.assertEqual(self.seen_b, [])
         self.assertTrue([x for x in lines if "never follow redirects" in x], lines[-5:])
+
+
+class KeepAwakeLeg(Case):
+    """Every job on the remote leg is counted in KeepAwake: +1 when it starts, -1 when it ends with the end time
+    written down (a job the local rate limit refuses has to balance too).
+    ⭐Waits for the job's `jobs.log` row, never for its final state: the final state is sent inside the same
+      `finally` *before* the slot/KeepAwake/bookkeeping lines, so right after `done` the count may still be 1."""
+
+    def test_a_job_is_counted_and_released(self):
+        seen = []
+        orig_begin = self.b.awake.begin
+        self.b.awake.begin = lambda: (seen.append(self.b.awake._busy), orig_begin())
+        self.b.start_remote()
+        self.d.push("job", job("ka1", "甲"))
+        self.assertTrue(self.d.wait(lambda: self.rows_of("ka1")), "jobs.log has no row for ka1")
+        self.assertEqual(seen, [0], "the job was counted when it started")
+        self.assertEqual(self.b.awake._busy, 0, "balanced once it ended")
+        self.assertIsNotNone(self.b.awake._last)
+        self.assertTrue(self.b.awake.wanted(), "it just ended: inside the tail")
+
+
+class KeepAwakeLegRateLimited(Case):
+    cfg = {"remote_jobs_per_hour": 0}           # the local rate limit: every job is refused
+
+    def test_a_rate_limited_job_still_balances(self):
+        self.b.start_remote()
+        self.d.push("job", job("ka2", "甲"))
+        self.assertTrue(self.d.wait(lambda: self.rows_of("ka2")), "jobs.log has no row for ka2")
+        self.assertEqual(self.events("ka2")[-1]["error"]["type"], "local_rate_limit")
+        self.assertEqual(self.b.awake._busy, 0)
+        self.assertIsNotNone(self.b.awake._last, "the refused job went through begin/end too")
 
 
 if __name__ == "__main__":

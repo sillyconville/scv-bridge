@@ -966,14 +966,14 @@ class Trim(unittest.TestCase):
         os.environ["FAKE_MODE"] = "ok"
 
     def test_the_answer_handed_back_is_trimmed(self):
-        _s, _h, body = chat({"model": "codex/gpt-5.6-luna", "messages": [U("甲")]})
+        _s, _h, body = chat({"model": "codex/gpt-6-luna", "messages": [U("甲")]})
         self.assertEqual(json.loads(body)["choices"][0]["message"]["content"], "echo[1]: 甲")
 
     def test_the_stream_still_carries_what_the_cli_actually_said(self):
         """⭐This is the cost of that decision, written down plainly here: the delta passes through verbatim => what
         the codex family's stream pieces together has whitespace on both ends that the non-streaming version does
         not. Never touch the delta just to line the two paths up -- that would erase what the CLI actually said."""
-        _s, _h, body = chat({"model": "codex/gpt-5.6-luna", "stream": True, "messages": [U("甲")]})
+        _s, _h, body = chat({"model": "codex/gpt-6-luna", "stream": True, "messages": [U("甲")]})
         rows = [json.loads(r) for r in helpers.sse_data(body)[:-1]]
         text = "".join(c["choices"][0]["delta"].get("content", "") for c in rows if c["choices"])
         self.assertEqual(text, "  echo[1]: 甲" + NL)

@@ -622,7 +622,8 @@ class BirthCert(_CleanTable):
             with self.subTest(state=hex(state)):
                 fake = scv._K32(OpenProcess=lambda *a: 77, GetProcessTimes=None,
                                 WaitForSingleObject=lambda h, ms, _s=state: _s,
-                                K32GetProcessMemoryInfo=None, CloseHandle=closed.append)
+                                K32GetProcessMemoryInfo=None, CloseHandle=closed.append,
+                                SetThreadExecutionState=None)
                 with mock.patch.object(scv, "_k32", return_value=fake):
                     self.assertEqual(scv._win_ask(4242, scv._WIN_QUERY, lambda k, h: "got it"), want)
         self.assertEqual(closed, [77, 77], "the handle was not closed")
@@ -717,6 +718,63 @@ class RunCliWithoutFamilyDoesNotTouchTheTable(unittest.TestCase):
     def test_every_class_touching_the_table_cleans_up_after_itself(self):
         offenders = [name for name in self._scan() if not issubclass(globals()[name], _CleanTable)]
         self.assertEqual(offenders, [], "these classes touch the registry but do not inherit _CleanTable ⇒ they only got a clean table by luck of alphabetical order")
+
+
+class KeepAwakeUnit(unittest.TestCase):
+    """A job running, or the last one ended less than window_s ago => tick pokes (resets the system idle timer);
+    otherwise it does not. window_s <= 0 => never pokes."""
+
+    def _ka(self, window=600.0):
+        now, pokes = [1000.0], []
+        ka = scv.KeepAwake(window, poke=lambda: pokes.append(now[0]), clock=lambda: now[0])
+        return ka, now, pokes
+
+    def test_idle_bridge_never_pokes(self):
+        ka, _now, pokes = self._ka()
+        self.assertFalse(ka.tick())
+        self.assertEqual(pokes, [])
+
+    def test_a_running_job_pokes_and_the_tail_lasts_window_s(self):
+        ka, now, pokes = self._ka(600.0)
+        ka.begin()
+        self.assertTrue(ka.tick())
+        now[0] += 3600                     # one job ran for an hour: still running => still pokes
+        self.assertTrue(ka.tick())
+        ka.end()
+        now[0] += 599
+        self.assertTrue(ka.tick(), "599 s after the last job ended: still inside the tail")
+        now[0] += 2
+        self.assertFalse(ka.tick(), "past 600 s: no more pokes")
+        self.assertEqual(len(pokes), 3)
+        self.assertEqual(ka.pokes, 3)
+
+    def test_two_jobs_overlap(self):
+        ka, now, _p = self._ka(10.0)
+        ka.begin(); ka.begin(); ka.end()
+        now[0] += 100
+        self.assertTrue(ka.wanted(), "one is still running")
+        ka.end()
+        now[0] += 11
+        self.assertFalse(ka.wanted())
+
+    def test_zero_window_is_off(self):
+        ka, _now, pokes = self._ka(0)
+        ka.begin()
+        self.assertFalse(ka.tick())
+        self.assertEqual(pokes, [])
+
+    def test_a_poke_that_raises_is_logged_not_fatal(self):
+        ka = scv.KeepAwake(600.0, poke=lambda: (_ for _ in ()).throw(OSError("denied")))
+        ka.begin()
+        with mock.patch.object(scv, "log") as lg:
+            self.assertFalse(ka.tick())
+        self.assertIn("stay awake", lg.call_args[0][0])
+
+    @unittest.skipUnless(sys.platform == "win32", "win32 only")
+    def test_the_real_poke_on_windows(self):
+        """Positive control: really call SetThreadExecutionState once (without ES_CONTINUOUS: it only resets the
+        timer once and leaves no state behind). A non-zero return means it worked."""
+        self.assertNotEqual(scv._k32().SetThreadExecutionState(scv.ES_SYSTEM_REQUIRED), 0)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 CLAUDE_MODELS = ("haiku", "sonnet", "opus")
-CODEX_MODELS = ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol")
+CODEX_MODELS = ("gpt-6-luna", "gpt-5.6-terra", "gpt-6-sol")    # 0.2.0: the service's own subscription seats (maintainer, 2026-09-27); next: find local models by themselves
 EFFORTS = ("low", "medium", "high")
 MODEL_RE = re.compile("^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 CODEX_GLOB = "OpenAI/Codex/bin/*/codex.exe"

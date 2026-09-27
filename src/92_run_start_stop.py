@@ -69,8 +69,11 @@ def serve_until(bridge, stop: threading.Event) -> None:
     """`scv run`'s main loop: reclaims idle sessions on the clock (A6). ⭐Wakes every 0.5s, never `wait(60)`: on
     win32, when the main thread is stuck in a long wait, Ctrl+C only gets handled once it wakes up (⏳this is
     written to CPython's known behaviour, not measured on this machine)."""
-    last = time.time()
+    last = poked = time.time()
     while not stop.wait(0.5):
+        if time.time() - poked >= AWAKE_EVERY_S:
+            poked = time.time()
+            bridge.awake.tick()
         if time.time() - last >= GC_EVERY_S:
             last = time.time()
             try:

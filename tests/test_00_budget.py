@@ -97,13 +97,14 @@ NET_MODULES = ("socket", "ssl", "http", "urllib", "ftplib", "smtplib", "telnetli
 #   plus kernel32's own `LoadLibrary*`. 🔴`ctypes` can reach any native network/process/file API directly
 #   (`WinDLL('winhttp')`, `ws2_32`) — every gate above is **completely blind** to it ⇒ the whole file is only
 #   allowed one door: the one `WinDLL("kernel32")` call inside `_k32`, and the only thing it hands back out is the
-#   five functions in `K32_EXPORTS`. ⚠️This is a door against **slipping**, ⛔ not against a deliberate bypass:
+#   six functions in `K32_EXPORTS`. ⚠️This is a door against **slipping**, ⛔ not against a deliberate bypass:
 #   every ctypes function object keeps its DLL alive in its own private `_objects` (re-review three, D2), and both
 #   the crack next to the door and the one square that still has no gate over it are written into `native_door`'s
 #   boundary.
 NATIVE_LOADERS = ("WinDLL", "CDLL", "OleDLL", "PyDLL", "windll", "cdll", "oledll", "pydll", "pythonapi",
                   "LibraryLoader")
-K32_EXPORTS = {"OpenProcess", "GetProcessTimes", "WaitForSingleObject", "K32GetProcessMemoryInfo", "CloseHandle"}
+K32_EXPORTS = {"OpenProcess", "GetProcessTimes", "WaitForSingleObject", "K32GetProcessMemoryInfo", "CloseHandle",
+               "SetThreadExecutionState"}
 # ⭐Every `ctypes` name scv.py ever touches (this is the reading `ctypes_surface()` uses) is named here. ⛔One extra
 #   one has to be an explicit decision each time: `ctypes._dlopen`/`WINFUNCTYPE`/`CFUNCTYPE`/`cast` are **not
 #   called loaders**, yet they can just as easily turn a DLL or a bare address into something callable ⇒
@@ -965,6 +966,9 @@ class Budget(unittest.TestCase):
         (5344→5399: the work-directory sweep, the remote-leg session namespace, doctor reporting the running
         bridge's families, the remote rate limit of 0), leaving one line; the implementer shortened comments rather
         than stop, which is exactly what this number must never cause. 51 lines of headroom now.
+        2026-09-27, lead raised 5450→5500 for 0.2.0: the CI fixes after publishing measured +10 (5399→5409),
+        KeepAwake measured +77 (5409→5486: the class, its config reader, the sixth `_k32` function, the remote
+        leg's begin/end and the main loop's tick); 14 lines of headroom.
         ⛔**The budget loosening ⛔ does not mean the archaeology a compression pass moved out should move back
         in** — the judge has not changed by one word (see NOTES.md::line-budget-3000)."""
         self.assertLessEqual(len(SRC.splitlines()), scv.LINE_BUDGET)
@@ -972,7 +976,7 @@ class Budget(unittest.TestCase):
         #   pulling its weight first, ⛔ never just raise the budget" ⇒ raising the budget has to be an
         #   **explicit** decision (with the reasoning above changed right along with it), ⛔ never someone quietly
         #   bumping 2000 up a bit.
-        self.assertEqual(scv.LINE_BUDGET, 5450)
+        self.assertEqual(scv.LINE_BUDGET, 5500)
 
     def test_the_gates_it_leans_on_really_exist(self):
         """The docstring above now carries the weight that used to belong to the line count ⇒ every gate it names

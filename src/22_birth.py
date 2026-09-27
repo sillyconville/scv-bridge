@@ -9,7 +9,7 @@
 BIRTH_WIN = "ft:"          # win32 birth id prefix: creation FILETIME. ⚠️old versions wrote .NET Ticks (no prefix) ⇒ see `birth_known`
 _WIN_ERROR_INVALID_PARAMETER, _WIN_EXITED, _WIN_STILL_RUNNING = 87, 0, 0x102
 _WIN_QUERY, _WIN_SYNC, _WIN_VM_READ = 0x1000, 0x00100000, 0x0010
-# ⭐`_k32()` hands out only these five functions, never the whole of kernel32: kernel32 itself also has
+# ⭐`_k32()` hands out only these six functions, never the whole of kernel32: kernel32 itself also has
 #   CreateProcessW / CreateFileW / LoadLibraryW / GetProcAddress (start a process, write to disk, load another
 #   DLL) — handing out the whole object would open a door right next to the child-process gate and the disk gate.
 #   🔴But this is a door against slipping, never against a deliberate bypass: every ctypes function object holds
@@ -18,8 +18,10 @@ _WIN_QUERY, _WIN_SYNC, _WIN_VM_READ = 0x1000, 0x00100000, 0x0010
 #   tests/test_00_budget.py::Budget::test_native_code_has_one_door goes red; reaching for a private attribute like
 #   `_objects` ⇒ tests/test_00_budget.py::Budget::test_no_private_attribute_is_reached_off_self goes red; a
 #   string-built reflection has no gate at all.
+#   SetThreadExecutionState (0.2.0, KeepAwake): only ever called with ES_SYSTEM_REQUIRED alone — resets the idle
+#   timer once, leaves no state behind.
 _K32 = collections.namedtuple("_K32", "OpenProcess GetProcessTimes WaitForSingleObject K32GetProcessMemoryInfo "
-                                      "CloseHandle")
+                                      "CloseHandle SetThreadExecutionState")
 
 
 class _WinMem(ctypes.Structure):
@@ -33,7 +35,7 @@ def _k32():
     """⚠️Every function needs its `argtypes`/`restype` written out: the default `c_int` truncates a 64-bit handle
     (Task 11's resource survey hit `handles: -1` once because of this). Load our own `WinDLL`, never the shared
     `ctypes.windll`: changing a signature on that one changes it for everyone else too.
-    🔴The one and only place in the whole file that loads native code, and it returns a `_K32` (five functions),
+    🔴The one and only place in the whole file that loads native code, and it returns a `_K32` (six functions),
     never the DLL object itself — the reason is in the `_K32` line above."""
     dll = ctypes.WinDLL("kernel32", use_last_error=True)
     dll.OpenProcess.argtypes, dll.OpenProcess.restype = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32], ctypes.c_void_p
@@ -44,8 +46,9 @@ def _k32():
     dll.K32GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(_WinMem), ctypes.c_uint32]
     dll.K32GetProcessMemoryInfo.restype = ctypes.c_int
     dll.CloseHandle.argtypes, dll.CloseHandle.restype = [ctypes.c_void_p], ctypes.c_int
+    dll.SetThreadExecutionState.argtypes, dll.SetThreadExecutionState.restype = [ctypes.c_uint32], ctypes.c_uint32
     return _K32(dll.OpenProcess, dll.GetProcessTimes, dll.WaitForSingleObject, dll.K32GetProcessMemoryInfo,
-                dll.CloseHandle)
+                dll.CloseHandle, dll.SetThreadExecutionState)
 
 
 def _win_ask(pid: int, access: int, fn):
