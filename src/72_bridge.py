@@ -1,3 +1,4 @@
+PORT_TRIES = 20                     # 0.2.1: how far past a taken default port the local API looks
 ES_SYSTEM_REQUIRED = 0x00000001     # SetThreadExecutionState: reset the system idle timer once (⛔ never ES_CONTINUOUS: that one sticks to the calling thread)
 AWAKE_EVERY_S = 30                  # how often the main loop asks; far below any sleep timeout Windows offers (1 minute is the shortest)
 
@@ -99,6 +100,21 @@ class Bridge:
             raise err
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         return self.httpd.server_address[1]
+
+    def start_local_or_next(self) -> tuple:
+        """0.2.1: `(port, moved_from)`. The default port taken by another program (seen on the maintainer's desktop)
+        ⇒ try the next `PORT_TRIES` ports and say where it went; `moved_from` is None when nothing moved.
+        ⛔never moves a port the user chose (their own client may point at it): that one fails as before."""
+        want = int(self.cfg.get("port") or DEFAULT_CONFIG["port"])
+        try:
+            return self.start_local(), None
+        except BridgeError:
+            if want != DEFAULT_CONFIG["port"]:
+                raise
+        for p in range(want + 1, want + PORT_TRIES + 1):
+            with contextlib.suppress(BridgeError):
+                return self.start_local(p), want
+        raise BridgeError("crashed", "the local API could not start on port %d or the %d after it" % (want, PORT_TRIES))
 
     def start_remote(self) -> bool:
         """Not paired = not one byte goes out to the network. Returns False = this bridge only has a local leg

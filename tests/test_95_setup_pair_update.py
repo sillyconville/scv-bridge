@@ -575,6 +575,20 @@ class Pair(_Fresh):
             self.assertNotIn("GOOD", said)
             self.assertNotIn("not-the-code", said)
 
+    def test_a_good_pair_sends_the_agent_back_to_setup_steps_6_and_8(self):
+        """0.2.1 (Plan 2B walkthrough, 2026-09-27): a real Codex, handed the pairing prompt, rushed to pair (the code
+        expires), restarted the bridge as `pair` said, and stopped there: setup.md step 6 (ask about an audit) and
+        step 8 (remember where the bridge is) never happened. `pair` is the last thing an installing agent reads
+        => it ends by pointing back at those two steps, after the restart commands."""
+        d = Dispatcher()
+        url = d.start()
+        self.addCleanup(d.stop)
+        rc, _lines, out, err = self.pair(url)
+        self.assertEqual(rc, 0, out + err)
+        restart = out.find("stop it, then start it again")
+        self.assertTrue(0 <= restart < out.find("step 6") < out.find("step 8"), out)
+        self.assertIn("tell", out[out.find("step 8"):])
+
     def test_plaintext_or_lookalike_urls_are_refused_before_a_single_dial(self):
         """the pairing call itself carries the pairing code ⇒ sending it in plaintext = the code has already
         leaked; blocking this only when `scv start` runs is already too late."""
@@ -626,6 +640,7 @@ class Setup(_Fresh):
             self.assertEqual(helpers.door_lines_missing(tail, *words), [], tail)
         self.assertEqual(rc, 0, out + err)
         self.assertTrue(scv.load_config()["local_token"])     # mints the local token as a side effect
+        self.assertTrue(0 < tail.find("step 6") < tail.find("step 8"), tail)   # 0.2.1: the rest of setup.md is named too
 
     def test_live_goes_through_to_doctor(self):
         """carry-forward 7: setup's `--live` is passed straight through to doctor."""

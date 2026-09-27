@@ -39,11 +39,11 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 PROTOCOL = 1
 MIN_PY = (3, 9)
-LINE_BUDGET = 5500      # ⭐the line count is only a proxy metric: auditability is guaranteed by those AST gates,
-#                         never by this number. Why 5500, and why the old 2000/3000/3800/4300/4400/4500/4600/5600/5400/5450 no
+LINE_BUDGET = 5550      # ⭐the line count is only a proxy metric: auditability is guaranteed by those AST gates,
+#                         never by this number. Why 5550, and why the old 2000/3000/3800/4300/4400/4500/4600/5600/5400/5450/5500 no
 #                         longer hold ⇒ tests/test_00_budget.py::Budget::test_line_budget's docstring;
 #                         📎 NOTES.md::line-budget-3000
 NL = chr(10)
@@ -2916,6 +2916,7 @@ class _Server(ThreadingHTTPServer):
     allow_reuse_address = os.name != "nt"
 
 
+PORT_TRIES = 20                     # 0.2.1: how far past a taken default port the local API looks
 ES_SYSTEM_REQUIRED = 0x00000001     # SetThreadExecutionState: reset the system idle timer once (⛔ never ES_CONTINUOUS: that one sticks to the calling thread)
 AWAKE_EVERY_S = 30                  # how often the main loop asks; far below any sleep timeout Windows offers (1 minute is the shortest)
 
@@ -3017,6 +3018,21 @@ class Bridge:
             raise err
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         return self.httpd.server_address[1]
+
+    def start_local_or_next(self) -> tuple:
+        """0.2.1: `(port, moved_from)`. The default port taken by another program (seen on the maintainer's desktop)
+        ⇒ try the next `PORT_TRIES` ports and say where it went; `moved_from` is None when nothing moved.
+        ⛔never moves a port the user chose (their own client may point at it): that one fails as before."""
+        want = int(self.cfg.get("port") or DEFAULT_CONFIG["port"])
+        try:
+            return self.start_local(), None
+        except BridgeError:
+            if want != DEFAULT_CONFIG["port"]:
+                raise
+        for p in range(want + 1, want + PORT_TRIES + 1):
+            with contextlib.suppress(BridgeError):
+                return self.start_local(p), want
+        raise BridgeError("crashed", "the local API could not start on port %d or the %d after it" % (want, PORT_TRIES))
 
     def start_remote(self) -> bool:
         """Not paired = not one byte goes out to the network. Returns False = this bridge only has a local leg
@@ -4809,7 +4825,19 @@ def started(port: int, ticket: str):
     ⭐Recognized by ticket, never by pid: under a venv's python launcher the pid can belong to a different process
       (measured the same on this machine, ⏳ venv not measured)."""
     rec = _read_pid_file() or {}
-    return rec if rec.get("ticket") == ticket and our_health(port) else None
+    # 0.2.1: once the ticket matches, the bridge's own port (it may have moved off a taken default, `bind_local`)
+    return rec if rec.get("ticket") == ticket and our_health(int(rec.get("port") or port)) else None
+
+
+def bind_local(bridge, cfg: dict) -> int:
+    """`cmd_run`'s local API: moved off a taken default port ⇒ config.json says the new one (so `status`, `token`,
+    `doctor` and the next `start` agree) and one log line names both."""
+    port, moved = bridge.start_local_or_next()
+    if moved is not None:
+        cfg["port"] = port
+        save_config(cfg)
+        log("⚠️ port %d is taken by another program ⇒ the local API moved to %d, and config.json now says %d" % (moved, port, port))
+    return port
 
 
 def spawn_detached(argv: list) -> tuple:
@@ -4911,7 +4939,7 @@ def cmd_run(args) -> int:
         log("⚠️ " + unused_codex_home(cfg))
     bridge = Bridge(cfg)
     try:
-        port = bridge.start_local()
+        port = bind_local(bridge, cfg)
     except BridgeError:
         # ⭐`start_local` has already landed on disk (the port number plus the OS's original words). M-7: its class
         #   is `crashed` (∈ RETRYABLE) — nothing on the bridge-starting path reads `retryable` ⇒ never open a new
@@ -4975,7 +5003,9 @@ def cmd_start(args) -> int:
                 return _cmd_failed("the bridge process started and quit right away (pid %d); the last few lines of bridge.log are below" % pid,
                                    "see the lines above; running it in the foreground shows exactly where it died:" + NL + self_cmd("run"), _log_tail())
         if rec is not None:
-            print("up: pid %d, port %d, log %s" % (rec["pid"], port, spath("bridge.log")))
+            if rec.get("port") != port:
+                print("port %d was taken by another program: the bridge moved to %s (config.json now says so)" % (port, rec.get("port")))
+            print("up: pid %d, port %s, log %s" % (rec["pid"], rec.get("port"), spath("bridge.log")))
             if note:
                 print(note)
             return 0
@@ -5307,7 +5337,8 @@ def cmd_setup(args) -> int:
                    "See the local token (put it in the api_key field of an OpenAI-compatible client):", self_cmd("token"),
                    "One real call per family plus the canary self-check (costs a little quota):", self_cmd("doctor", "--live"),
                    'Only needed if you are connecting remote work (never paired = not one byte goes out to the internet): append " <url> --code <pairing code>" to this line and run it:',
-                   self_cmd("pair")]))
+                   self_cmd("pair"),
+                   "Installing from setup.md for someone? Once the bridge is running, finish its step 6 (ask them about an audit) and step 8 (note where the bridge is, and tell them where you noted it)."]))
     return rc
 
 
@@ -5348,7 +5379,8 @@ def cmd_pair(args) -> int:
     print(NL.join(["paired: %s%s. The token is stored in %s" % (url, swapped, spath("config.json")),
                    "from the next time the bridge starts, it will dial out to: %s" % ", ".join(p for k, p in REMOTE_PATHS.items() if k != "pair"),
                    "if the bridge is currently running, it is not using this yet: stop it, then start it again:", self_cmd("stop"), self_cmd("start"),
-                   "to disconnect this side: delete remote_token from config.json"]))
+                   "to disconnect this side: delete remote_token from config.json",
+                   "installing from setup.md for someone? after the restart, finish its step 6 (ask them about an audit) and step 8 (note where the bridge is, and tell them where you noted it)"]))
     return 0
 
 

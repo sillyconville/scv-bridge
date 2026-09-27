@@ -36,7 +36,19 @@ def started(port: int, ticket: str):
     ⭐Recognized by ticket, never by pid: under a venv's python launcher the pid can belong to a different process
       (measured the same on this machine, ⏳ venv not measured)."""
     rec = _read_pid_file() or {}
-    return rec if rec.get("ticket") == ticket and our_health(port) else None
+    # 0.2.1: once the ticket matches, the bridge's own port (it may have moved off a taken default, `bind_local`)
+    return rec if rec.get("ticket") == ticket and our_health(int(rec.get("port") or port)) else None
+
+
+def bind_local(bridge, cfg: dict) -> int:
+    """`cmd_run`'s local API: moved off a taken default port ⇒ config.json says the new one (so `status`, `token`,
+    `doctor` and the next `start` agree) and one log line names both."""
+    port, moved = bridge.start_local_or_next()
+    if moved is not None:
+        cfg["port"] = port
+        save_config(cfg)
+        log("⚠️ port %d is taken by another program ⇒ the local API moved to %d, and config.json now says %d" % (moved, port, port))
+    return port
 
 
 def spawn_detached(argv: list) -> tuple:
@@ -138,7 +150,7 @@ def cmd_run(args) -> int:
         log("⚠️ " + unused_codex_home(cfg))
     bridge = Bridge(cfg)
     try:
-        port = bridge.start_local()
+        port = bind_local(bridge, cfg)
     except BridgeError:
         # ⭐`start_local` has already landed on disk (the port number plus the OS's original words). M-7: its class
         #   is `crashed` (∈ RETRYABLE) — nothing on the bridge-starting path reads `retryable` ⇒ never open a new
@@ -202,7 +214,9 @@ def cmd_start(args) -> int:
                 return _cmd_failed("the bridge process started and quit right away (pid %d); the last few lines of bridge.log are below" % pid,
                                    "see the lines above; running it in the foreground shows exactly where it died:" + NL + self_cmd("run"), _log_tail())
         if rec is not None:
-            print("up: pid %d, port %d, log %s" % (rec["pid"], port, spath("bridge.log")))
+            if rec.get("port") != port:
+                print("port %d was taken by another program: the bridge moved to %s (config.json now says so)" % (port, rec.get("port")))
+            print("up: pid %d, port %s, log %s" % (rec["pid"], rec.get("port"), spath("bridge.log")))
             if note:
                 print(note)
             return 0

@@ -13,7 +13,8 @@ def cmd_setup(args) -> int:
                    "See the local token (put it in the api_key field of an OpenAI-compatible client):", self_cmd("token"),
                    "One real call per family plus the canary self-check (costs a little quota):", self_cmd("doctor", "--live"),
                    'Only needed if you are connecting remote work (never paired = not one byte goes out to the internet): append " <url> --code <pairing code>" to this line and run it:',
-                   self_cmd("pair")]))
+                   self_cmd("pair"),
+                   "Installing from setup.md for someone? Once the bridge is running, finish its step 6 (ask them about an audit) and step 8 (note where the bridge is, and tell them where you noted it)."]))
     return rc
 
 
@@ -54,7 +55,8 @@ def cmd_pair(args) -> int:
     print(NL.join(["paired: %s%s. The token is stored in %s" % (url, swapped, spath("config.json")),
                    "from the next time the bridge starts, it will dial out to: %s" % ", ".join(p for k, p in REMOTE_PATHS.items() if k != "pair"),
                    "if the bridge is currently running, it is not using this yet: stop it, then start it again:", self_cmd("stop"), self_cmd("start"),
-                   "to disconnect this side: delete remote_token from config.json"]))
+                   "to disconnect this side: delete remote_token from config.json",
+                   "installing from setup.md for someone? after the restart, finish its step 6 (ask them about an audit) and step 8 (note where the bridge is, and tell them where you noted it)"]))
     return 0
 
 

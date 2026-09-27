@@ -1285,5 +1285,75 @@ class Startup(unittest.TestCase):
         self.assertEqual(len(lines), 1, lines)
 
 
+class DefaultPortTaken(unittest.TestCase):
+    """0.2.1 (Plan 2B walkthrough, 2026-09-27): on the maintainer's desktop the default port was held by another
+    program; the first `start` quit on the spot and the installing agent had to edit config.json by itself.
+    => when the *default* port is taken, the local API moves to the next free port, config.json is updated and the
+    log says so; a port the user chose is never moved (their own client may point at it).
+    The default is swapped for a port this test holds: tests never touch the real default port (A12)."""
+
+    def _hold(self):
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        s.listen(1)
+        self.addCleanup(s.close)
+        return s.getsockname()[1]
+
+    def _bridge(self, port):
+        b = scv.Bridge(dict(scv.load_config(), port=port))
+        self.addCleanup(b.stop)
+        return b
+
+    def test_the_default_port_taken_moves_to_the_next_free_one(self):
+        held = self._hold()
+        with mock.patch.dict(scv.DEFAULT_CONFIG, {"port": held}):
+            port, moved = self._bridge(held).start_local_or_next()
+        self.assertEqual(moved, held)
+        self.assertTrue(held < port <= held + scv.PORT_TRIES, port)
+
+    def test_a_port_the_user_chose_is_never_moved(self):
+        held = self._hold()
+        self.assertNotEqual(held, scv.DEFAULT_CONFIG["port"])
+        with self.assertRaises(scv.BridgeError):
+            self._bridge(held).start_local_or_next()
+
+    def test_the_default_port_free_is_used_as_is(self):
+        """Zero-input control: nothing holds it => no move."""
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        free = s.getsockname()[1]
+        s.close()
+        with mock.patch.dict(scv.DEFAULT_CONFIG, {"port": free}):
+            port, moved = self._bridge(free).start_local_or_next()
+        self.assertEqual((port, moved), (free, None))
+
+    def test_run_writes_the_moved_port_to_config_and_says_so(self):
+        """The wiring `cmd_run` uses: the moved port lands in config.json (so `status`, `token`, `doctor` and the
+        next `start` all see it) and one log line names both ports."""
+        held = self._hold()
+        self.addCleanup(scv.save_config, scv.load_config())    # put back exactly what was there (restoring "the default" dialed the real default port, test_99)
+        cfg = dict(scv.load_config(), port=held)
+        scv.save_config(cfg)
+        with mock.patch.dict(scv.DEFAULT_CONFIG, {"port": held}):
+            b = scv.Bridge(cfg)
+            self.addCleanup(b.stop)
+            lines = log_lines_during(lambda: scv.bind_local(b, cfg))
+        now = scv.load_config()["port"]
+        self.assertNotEqual(now, held)
+        self.assertEqual(b.httpd.server_address[1], now)
+        self.assertEqual(len([x for x in lines if str(held) in x and str(now) in x and "config.json" in x]), 1, lines)
+
+    def test_start_waits_on_the_port_the_bridge_reports(self):
+        """`scv start` read the port from config.json before spawning; after a move the bridge answers elsewhere =>
+        `started()` takes the port from bridge.pid (written by the bridge itself) once the ticket matches."""
+        b, port, _tok = helpers.start_bridge()
+        self.addCleanup(b.stop)
+        scv._atomic_write("bridge.pid", json.dumps({"pid": os.getpid(), "born": "x", "port": port, "ticket": "t-1"}))
+        self.addCleanup(lambda: scv.spath("bridge.pid").unlink())
+        other = self._hold()
+        self.assertIsNotNone(scv.started(other, "t-1"))
+        self.assertIsNone(scv.started(other, "t-2"), "a different ticket is still refused")
+
+
 if __name__ == "__main__":
     unittest.main()

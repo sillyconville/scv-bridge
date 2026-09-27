@@ -1369,7 +1369,9 @@ class PidFile(_Staged):
         self.assertIsNone(scv.started(port, "mine"))                # leftover from last time: never counts
         put_pid({"pid": os.getpid(), "born": scv.proc_start_id(os.getpid()), "port": port, "ticket": "mine"})
         self.assertEqual(scv.started(port, "mine")["ticket"], "mine")
-        self.assertIsNone(scv.started(free_port(), "mine"))        # right ticket, nothing answers on the port: not up yet
+        # right ticket, nothing answers on the port it reports: not up yet (0.2.1: the port is the one bridge.pid reports)
+        put_pid({"pid": os.getpid(), "born": scv.proc_start_id(os.getpid()), "port": free_port(), "ticket": "mine"})
+        self.assertIsNone(scv.started(port, "mine"))
 
     def start_with(self, writes_own_file):
         """Run `cmd_start` in-process, with `spawn_detached` replaced by: genuinely starting a bridge on the
