@@ -32,11 +32,11 @@ If none of them prints Python 3.9 or newer, **ask the user before installing any
 Use `curl` exactly as below, not a fetch tool that summarises pages: the bytes must be exact. `--create-dirs` creates `$HOME/.scv` if it does not exist.
 
 ```powershell
-curl.exe -fsSL --create-dirs https://raw.githubusercontent.com/sillyconville/scv-bridge/<COMMIT>/scv.py -o "$HOME/.scv/scv.py"
+curl.exe -fsSL --create-dirs https://raw.githubusercontent.com/sillyconville/scv-bridge/65acedff4e1ab32858f5228391392e2eb657c520/scv.py -o "$HOME/.scv/scv.py"
 ```
 
 ```bash
-curl -fsSL --create-dirs https://raw.githubusercontent.com/sillyconville/scv-bridge/<COMMIT>/scv.py -o "$HOME/.scv/scv.py"
+curl -fsSL --create-dirs https://raw.githubusercontent.com/sillyconville/scv-bridge/65acedff4e1ab32858f5228391392e2eb657c520/scv.py -o "$HOME/.scv/scv.py"
 ```
 
 ## 3. Check its sha256
@@ -51,7 +51,7 @@ Compute the file's sha256 with the Python from step 1:
 <python> -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$HOME/.scv/scv.py"
 ```
 
-It must equal this value — sha256 `<SHA256>`. If the two differ, stop, do not run the file, and tell the user both values.
+It must equal this value — sha256 `fc8998fd0c4aa9fd6e6e88f7730005821960d097a10ddad8143f7af095db63eb`. If the two differ, stop, do not run the file, and tell the user both values.
 
 ## 4. Run `setup`
 
