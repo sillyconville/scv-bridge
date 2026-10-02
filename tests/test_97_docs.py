@@ -415,7 +415,7 @@ class ReadmeFactsFromCode(unittest.TestCase):
         self.assertIn("`%s/<commit>/scv.py`" % scv.UPDATE_BASE, t)
 
     def test_hello_is_exactly_the_whitelist(self):
-        stub = types.SimpleNamespace(found={}, cat=[], cfg={})
+        stub = types.SimpleNamespace(found={}, cat=[], cfg={}, local_port=0)
         said = ticks(span(section(self.text, "What it connects to"), "`hello` sends exactly these keys:", "—"))
         self.assertEqual(sorted(said), sorted(scv.hello_payload(stub)))
         self.assertEqual(len(said), len(set(said)))
@@ -1401,7 +1401,7 @@ class SkillMd(unittest.TestCase):
         row = next(r for r in self.rows if ticks(r[1])[0] == "doctor")
         self.assertIn("`doctor` says why", row[2])
         health = scv.Bridge.health(types.SimpleNamespace(
-            sessions=types.SimpleNamespace(counts=lambda: {}), started_at=0, cat=[], remote=None,
+            sessions=types.SimpleNamespace(counts=lambda: {}), started_at=0, cat=[], remote=None, cfg={},
             found={"codex": {"version": "codex 1.2.3 C:/x/codex.exe", "blocked": "请跑：C:/x/codex.exe login"}}))
         self.assertEqual(health["families"], {"codex": {"version": "1.2.3", "blocked": True}})
 

@@ -24,6 +24,7 @@ import unittest
 from unittest import mock
 
 from tests import helpers
+from tests.fake_dispatcher import Dispatcher
 # ⭐The scanner and the ruler that measures "how many lines really got added to disk" must each have only one
 #   implementation: never copy a second one in here (this same repository's `_no_backslash` / `gate_missing` exist
 #   for exactly this reason).
@@ -1353,6 +1354,62 @@ class DefaultPortTaken(unittest.TestCase):
         other = self._hold()
         self.assertIsNotNone(scv.started(other, "t-1"))
         self.assertIsNone(scv.started(other, "t-2"), "a different ticket is still refused")
+
+
+class Wake(unittest.TestCase):
+    """0.3.0 (spec B39): `GET /wake` — no token, GET only, idempotent; an `Origin` header is let through and gets no
+    CORS header back (a page elsewhere may open it, never read it); a page, never JSON; not paired ⇒ it says so and
+    does nothing. ⭐All it can ever do is make the bridge dial the service it is already paired with."""
+
+    def setUp(self):
+        self.d = Dispatcher()
+        url = self.d.start()
+        self.addCleanup(self.d.stop)
+        self.b, self.port, self.tok = helpers.start_bridge(remote_url=url, remote_token=self.d.token,
+                                                           allowed_origins=["https://ok.example"])
+        self.addCleanup(self.b.stop)
+
+    def test_wakes_without_a_token_and_answers_a_page(self):
+        st, h, body = helpers.http("GET", self.port, "/wake")
+        self.assertEqual(st, 200)
+        self.assertTrue(h["Content-Type"].startswith("text/html"), h)
+        self.assertIn(b"The bridge is awake.", body)
+        self.assertIn(b"window.close()", body)
+        self.assertTrue(self.d.wait(lambda: self.d.connects >= 1), "GET /wake never made the remote leg dial")
+
+    def test_twice_is_still_one_remote_leg(self):
+        helpers.http("GET", self.port, "/wake")
+        leg = self.b.remote
+        st, _h, body = helpers.http("GET", self.port, "/wake")
+        self.assertEqual((st, self.b.remote), (200, leg))
+        self.assertIn(b"The bridge is awake.", body)
+
+    def test_an_origin_is_let_through_and_gets_no_cors_header(self):
+        for origin in ("https://sillyconville.com", "https://ok.example"):
+            with self.subTest(origin=origin):
+                st, h, _b = helpers.http("GET", self.port, "/wake", headers={"Origin": origin})
+                self.assertEqual(st, 200)
+                self.assertNotIn("Access-Control-Allow-Origin", h)
+        # controls: the exception is /wake's alone — the same unknown Origin on /v1/models is still refused, and a
+        #   configured one there still gets its CORS header (so the no-header above is this path's doing)
+        self.assertEqual(helpers.http("GET", self.port, "/v1/models", token=self.tok,
+                                      headers={"Origin": "https://sillyconville.com"})[0], 403)
+        _s, h2, _b2 = helpers.http("GET", self.port, "/v1/models", token=self.tok, headers={"Origin": "https://ok.example"})
+        self.assertEqual(h2.get("Access-Control-Allow-Origin"), "https://ok.example")
+
+    def test_only_get_and_only_a_loopback_host(self):
+        self.assertEqual(helpers.http("POST", self.port, "/wake", body={})[0], 404)
+        self.assertEqual(helpers.http("GET", self.port, "/wake", headers={"Host": "evil.example"})[0], 403)
+        self.assertIsNone(self.b.remote, "a refused request still woke the bridge")
+
+    def test_not_paired_says_so_and_does_nothing(self):
+        b, port, _t = helpers.start_bridge(remote_url="", remote_token="")
+        self.addCleanup(b.stop)
+        st, h, body = helpers.http("GET", port, "/wake")
+        self.assertEqual(st, 409)
+        self.assertIn(b"not paired", body)
+        self.assertNotIn(b"window.close()", body, "a page with bad news stays open until the lobby closes it")
+        self.assertIsNone(b.remote)
 
 
 if __name__ == "__main__":

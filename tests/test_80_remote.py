@@ -96,7 +96,8 @@ class Basics(Case):
         self.assertTrue(self.b.start_remote())
         self.assertTrue(self.d.wait(lambda: self.d.hellos))
         hello = self.d.hellos[0]
-        self.assertEqual(sorted(hello), ["bridge_version", "families", "max_concurrent", "models", "os", "protocol", "python"])
+        self.assertEqual(sorted(hello), ["bridge_version", "families", "local_port", "max_concurrent", "models", "os", "protocol", "python"])
+        self.assertEqual(hello["local_port"], self.port)
         self.assertEqual(hello["models"], self.b.cat)
         blob = json.dumps(hello)
         for leak in ("someone@example.com", "org-1", os.path.expanduser("~")):
@@ -2330,6 +2331,107 @@ class KeepAwakeLegRateLimited(Case):
         self.assertEqual(self.events("ka2")[-1]["error"]["type"], "local_rate_limit")
         self.assertEqual(self.b.awake._busy, 0)
         self.assertIsNotNone(self.b.awake._last, "the refused job went through begin/end too")
+
+
+class SleepWake(Case):
+    """0.3.0 (spec B35–B38): the remote leg only runs while the bridge is awake. Woken = the same remote leg as before
+    (B37); back to sleep once it has been quiet for `idle_sleep_s` (the clock counts from the later of waking and the
+    last job's end); ⛔never while a job is queued or running. The in-process `Bridge` never dials by itself — "a
+    started bridge is asleep" on the real start path is pinned in tests/test_90_cli.py::Lifecycle."""
+    cfg = {"idle_sleep_s": 600}
+
+    def test_healthz_says_asleep_then_awake_and_when_it_sleeps(self):
+        self.assertEqual(self.b.health()["remote"], {"state": "asleep"})
+        self.assertEqual((self.d.hellos, self.d.connects), ([], 0))
+        self.assertEqual(self.b.wake("test"), "woke")
+        self.assertTrue(self.d.wait(lambda: self.d.connects >= 1), "woke, but the remote leg never dialed")
+        rem = self.b.health()["remote"]
+        self.assertIn(rem["state"], ("idle", "hello", "streaming"), rem)
+        self.assertTrue(590 <= rem["sleeps_in_s"] <= 600, rem)
+
+    def test_a_second_wake_starts_nothing_new_and_restarts_the_clock(self):
+        self.assertEqual(self.b.wake("test"), "woke")
+        leg = self.b.remote
+        self.b.woke_at -= 500
+        self.assertEqual(self.b.wake("again"), "awake")
+        self.assertIs(self.b.remote, leg, "a second wake started a second remote leg (P22)")
+        self.assertGreater(self.b.sleeps_in(), 590, "someone just asked for it: the ten minutes start over")
+
+    def test_quiet_for_idle_sleep_s_then_asleep_and_silent(self):
+        self.assertEqual(self.b.wake("test"), "woke")
+        self.assertTrue(self.d.wait(lambda: self.d.connects >= 1))
+        old = self.b.remote
+        self.assertFalse(self.b.idle_tick(now=self.b.woke_at + 599))
+        self.assertTrue(self.b.idle_tick(now=self.b.woke_at + 601))
+        self.assertIsNone(self.b.remote)
+        self.assertTrue(old._stop.is_set(), "the old remote leg was never told to stop")
+        self.assertEqual(self.b.health()["remote"], {"state": "asleep"})
+        time.sleep(1.0)                                  # the old leg's open stream ends at its next line (the dispatcher's keepalive)
+        n, h = self.d.connects, len(self.d.hellos)
+        time.sleep(1.5)
+        self.assertEqual((self.d.connects, len(self.d.hellos)), (n, h), "asleep, yet it still dials")
+
+    def test_the_clock_counts_from_the_last_job(self):
+        self.assertEqual(self.b.wake("test"), "woke")
+        self.d.push("job", job("sw-last", "甲"))
+        self.assertTrue(self.d.wait(lambda: self.rows_of("sw-last")), "jobs.log has no row for sw-last")
+        last = self.b.awake._last
+        self.b.woke_at = last - 300                      # woke five minutes before the job: the job's end must win
+        self.assertFalse(self.b.idle_tick(now=last + 599), "went to sleep counting from waking, not from the last job")
+        self.assertTrue(self.b.idle_tick(now=last + 601))
+
+    def test_never_while_a_job_is_queued_or_running(self):
+        self.assertEqual(self.b.wake("test"), "woke")
+        far = time.time() + 10 ** 6
+        self.b.awake.begin()
+        try:
+            self.assertFalse(self.b.idle_tick(now=far), "went to sleep with a job running")
+        finally:
+            self.b.awake.end()
+        with self.b.remote._early_lock:
+            self.b.remote._queued["sw-q"] = 1
+        try:
+            self.assertFalse(self.b.idle_tick(now=far), "went to sleep with a job waiting for its ack")
+        finally:
+            with self.b.remote._early_lock:
+                self.b.remote._queued.pop("sw-q", None)
+        self.assertTrue(self.b.idle_tick(now=far), "control: nothing left ⇒ it does go to sleep")
+
+    def test_after_sleep_a_wake_runs_a_job_exactly_once(self):
+        """Review Focus ①②: asleep → woken again right away (the old leg may still be winding down) ⇒ a new remote
+        leg; a job pushed now is acked and answered exactly once."""
+        self.assertEqual(self.b.wake("test"), "woke")
+        self.assertTrue(self.d.wait(lambda: self.d.connects >= 1))
+        old = self.b.remote
+        self.assertTrue(self.b.idle_tick(now=time.time() + 10 ** 6))
+        self.assertEqual(self.b.wake("again"), "woke", "asleep again, so this is a real wake")
+        self.assertIsNot(self.b.remote, old)
+        self.d.push("job", job("sw-once", "甲"))
+        self.assertTrue(self.d.wait(self.terminal("sw-once")))
+        time.sleep(1.0)
+        kinds = [e["event"] for e in self.events("sw-once")]
+        self.assertEqual((kinds.count("ack"), kinds.count("done")), (1, 1), kinds)
+
+    def test_not_paired_and_refused(self):
+        b, _p, _t = helpers.start_bridge(remote_url="", remote_token="")
+        self.addCleanup(b.stop)
+        self.assertEqual(b.health()["remote"], {"state": "off"})
+        self.assertEqual((b.wake("test"), b.remote), ("not_paired", None))
+        b2, _p2, _t2 = helpers.start_bridge(remote_url="http://example.com", remote_token="x")
+        self.addCleanup(b2.stop)
+        self.assertEqual((b2.wake("test"), b2.remote), ("cannot_dial", None))
+
+
+class NeverGoesBack(Case):
+    """`idle_sleep_s: 0` ⇒ once woken it stays awake until the bridge stops (the knob for someone who wants 0.2.x's
+    always-on)."""
+    cfg = {"idle_sleep_s": 0}
+
+    def test_zero_never_sleeps(self):
+        self.assertEqual(self.b.wake("test"), "woke")
+        self.assertIsNone(self.b.sleeps_in())
+        self.assertFalse(self.b.idle_tick(now=time.time() + 10 ** 6))
+        self.assertIsNotNone(self.b.remote)
 
 
 if __name__ == "__main__":

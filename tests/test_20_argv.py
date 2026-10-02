@@ -1359,7 +1359,7 @@ class CodexDefaults(unittest.TestCase):
         self.assertIn("codex/gpt-5.6-luna", cat)
 
     def test_version(self):
-        self.assertEqual(scv.VERSION, "0.2.1")
+        self.assertEqual(scv.VERSION, "0.3.0")
 
 
 if __name__ == "__main__":

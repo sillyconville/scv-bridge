@@ -28,7 +28,7 @@ def _make_handler(bridge: Bridge):
             gave. ⇒ turned off; whatever needs saying, we say it ourselves."""
             return
 
-        # ---- Exits: the response only ever goes out through these two doors
+        # ---- Exits: the response only ever goes out through these three doors (the third, `_page`, is `GET /wake`'s alone)
         def _json(self, status: int, obj: dict, extra: dict | None = None) -> None:
             data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
             if self._sent:
@@ -42,6 +42,24 @@ def _make_handler(bridge: Bridge):
             self.send_header("Content-Length", str(len(data)))
             for k, v in list(self._cors.items()) + list((extra or {}).items()):
                 self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _page(self, status: int, text: str, close: bool) -> None:
+            """0.3.0: the third exit, `GET /wake`'s alone — a page for a browser window, never JSON. ⭐No CORS header
+            ever (this path skipped the `Origin` guard, see `_guard`): a page on another site can open it, but can
+            never read what it says."""
+            # `window` + chr(46): the address gate would read the two words joined by a dot as a host name
+            script = (("<script>setTimeout(function () { window" + chr(46) + "close(); }, %d);</script>") % WAKE_CLOSE_MS) if close else ""
+            data = ("<!doctype html><meta charset=utf-8><title>scv</title><p>%s</p>%s" % (text, script)).encode("utf-8")
+            if self._sent:
+                log("⚠️ the local API tried to send a second response (status=%d, GET /wake) ⇒ only logging this line" % status)
+                return
+            self._sent = True
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
 
@@ -94,7 +112,7 @@ def _make_handler(bridge: Bridge):
 
         # ---- The four guards (B23), cheapest to most expensive; each one has its own counter-example test for
         #      "leave this out and it gets through"
-        def _guard(self, need_token: bool, need_json: bool) -> bool:
+        def _guard(self, need_token: bool, need_json: bool, any_origin: bool = False) -> bool:
             host = (self.headers.get("Host") or "").strip().lower()
             if host.startswith("["):        # `[::1]:8765` ⇒ `::1`
                 host = host[1:].split("]")[0]
@@ -104,7 +122,9 @@ def _make_handler(bridge: Bridge):
                 # DNS rebinding: the request really did land on the loopback port, but the browser thinks it is visiting evil.example
                 return self._refuse(403, "forbidden_host", "the Host header is not a loopback address: %s" % repr(host)[:64])
             origin = self.headers.get("Origin")
-            if origin:
+            if origin and not any_origin:
+                # ⭐`any_origin` is `GET /wake`'s alone (0.3.0, spec B39): all it can do is make the bridge dial the one
+                #   service it is already paired with, and it never echoes this header back ⇒ letting it in costs nothing
                 if origin not in (bridge.cfg.get("allowed_origins") or []):
                     return self._refuse(403, "forbidden_origin", "a request carrying an Origin header is refused by default: %s" % repr(origin)[:128])
                 # ⭐only echo this header back once it is configured, never echo it unconditionally
@@ -202,6 +222,9 @@ def _make_handler(bridge: Bridge):
                     self._json(200, {"object": "list", "data": [
                         {"id": m, "object": "model", "created": born, "owned_by": m.split("/")[0]}
                         for m in bridge.cat]})
+            elif path == "/wake":
+                if self._guard(False, False, any_origin=True):
+                    self._page(*WAKE_PAGES[bridge.wake("GET /wake")])
             else:
                 self._refuse(404, "not_found", "no such path: %s" % repr(self.path)[:128])
 

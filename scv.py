@@ -39,11 +39,11 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 PROTOCOL = 1
 MIN_PY = (3, 9)
-LINE_BUDGET = 5550      # ⭐the line count is only a proxy metric: auditability is guaranteed by those AST gates,
-#                         never by this number. Why 5550, and why the old 2000/3000/3800/4300/4400/4500/4600/5600/5400/5450/5500 no
+LINE_BUDGET = 5750      # ⭐the line count is only a proxy metric: auditability is guaranteed by those AST gates,
+#                         never by this number. Why 5750, and why the old 2000/3000/3800/4300/4400/4500/4600/5600/5400/5450/5500/5550 no
 #                         longer hold ⇒ tests/test_00_budget.py::Budget::test_line_budget's docstring;
 #                         📎 NOTES.md::line-budget-3000
 NL = chr(10)
@@ -139,7 +139,7 @@ class BridgeError(Exception):
 
 DEFAULT_CONFIG = {"port": 8765, "max_concurrent": 4, "remote_url": "", "remote_token": "",
                   "remote_jobs_per_hour": 600, "allowed_origins": [], "claude_bin": "", "codex_bin": "",
-                  "keep_awake_s": 600, "extra_models": {"claude": [], "codex": []}}
+                  "keep_awake_s": 600, "idle_sleep_s": 600, "wake_on_start": False, "extra_models": {"claude": [], "codex": []}}
 
 _cfg_lock = threading.RLock()   # reentrant: the path that mints a token re-enters save_config() once more
 
@@ -2691,7 +2691,7 @@ class JobLog:
         return [json.loads(x) for x in good[-n:]]
 
 # ━━ Local API (B3/B5/B23): a few OpenAI-compatible routes + four guards
-GET_ROUTES = ("/healthz", "/v1/models")
+GET_ROUTES = ("/healthz", "/v1/models", "/wake")
 POST_ROUTES = ("/v1/chat/completions", "/v1/sessions/close")
 ROUTES = GET_ROUTES + POST_ROUTES   # ⭐there is only one routing table: preflight reads routes off it too (never let OPTIONS keep a table of its own)
 MAX_BODY = 8 * 1024 * 1024
@@ -2729,6 +2729,13 @@ REJECTED_PARAMS = ("tools", "tool_choice", "functions", "function_call", "logpro
 #   Gates on both ends read that table: every entry in `KNOWN_PARAMS`/`REJECTED_PARAMS` must be named in it, and
 #   whatever the "straight 400" row names must really be in these two tuples (tests/test_97_docs.py::CompatTable)
 #   — change these two tuples, and go change that table too.
+# 0.3.0 (spec B39): what `GET /wake` answers — a small page for a browser window (the lobby opens it in a popup of its
+#   own: a top-level page is the one way a web page may reach loopback without a permission prompt), never JSON.
+#   `Bridge.wake`'s outcome ⇒ (status, the one line it says, whether the page closes its own window).
+WAKE_PAGES = {"woke": (200, "The bridge is awake.", True), "awake": (200, "The bridge is awake.", True),
+              "not_paired": (409, "This bridge is not paired, so there is nothing to wake.", False),
+              "cannot_dial": (409, "This bridge cannot dial out: bridge.log on this machine says why.", False)}
+WAKE_CLOSE_MS = 600          # the page closes its own window this long after it shows (the lobby closes it too)
 _refuse_warned: set = set()   # each of the four guards only complains the first time (reasons in `Handler._refuse`)
 
 
@@ -2950,6 +2957,14 @@ class KeepAwake:
             self._busy = max(0, self._busy - 1)
             self._last = self._clock()
 
+    def quiet_since(self, since: float):
+        """0.3.0 (spec B38): when the remote leg last went quiet, counting from `since` (when it woke) — `None` while a
+        job is running. ⭐The same `_busy`/`_last` this class already keeps, never a second tally of jobs."""
+        with self._lock:
+            if self._busy > 0:
+                return None
+            return since if self._last is None else max(since, self._last)
+
     def wanted(self) -> bool:
         if self.window_s <= 0:
             return False
@@ -2974,14 +2989,21 @@ def _poke_idle_timer() -> None:
         _k32().SetThreadExecutionState(ES_SYSTEM_REQUIRED)
 
 
-def _awake_window(v) -> float:
-    """config.json's `keep_awake_s`: missing ⇒ 600; a number ≥ 0 ⇒ that; anything else ⇒ 600, said once."""
+def _config_seconds(cfg: dict, key: str) -> float:
+    """A seconds knob in config.json (`keep_awake_s`; 0.3.0's `idle_sleep_s`): missing ⇒ 600; a number ≥ 0 ⇒ that;
+    anything else ⇒ 600, said once per start."""
+    v = cfg.get(key)
     if v is None:
         return 600.0
     if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
         return float(v)
-    log("⚠️ config.json's keep_awake_s is not a number ≥ 0 (it is %r) ⇒ using 600" % (v,))
+    log("⚠️ config.json's %s is not a number ≥ 0 (it is %r) ⇒ using 600" % (key, v))
     return 600.0
+
+
+def _paired(cfg: dict) -> bool:
+    """Paired = both halves `scv pair` writes are there (the one judgment `start_remote`, `wake` and `/healthz` share)."""
+    return bool(cfg.get("remote_url")) and bool(cfg.get("remote_token"))
 
 
 class Bridge:
@@ -2998,9 +3020,16 @@ class Bridge:
         self.sessions = SessionManager(cfg, lambda: self.cat)
         self.joblog = JobLog()
         # 0.2.0: `keep_awake_s` — how long after the last remote job the machine is kept awake (0 = off)
-        self.awake = KeepAwake(_awake_window(cfg.get("keep_awake_s")))
+        self.awake = KeepAwake(_config_seconds(cfg, "keep_awake_s"))
+        # 0.3.0 (spec B35–B38): the remote leg sleeps — nothing dials until `wake()` (`GET /wake`, the wake
+        #   subcommand, or the first start after pairing), and `idle_tick()` hangs it up after `idle_sleep_s` quiet
+        #   (0 = never on its own)
+        self.idle_s = _config_seconds(cfg, "idle_sleep_s")
+        self.woke_at = None
+        self._wake_lock = threading.Lock()
         self.started_at = time.time()
         self.httpd = None
+        self.local_port = 0                # 0.3.0: this bridge's local API port, reported in hello (the lobby opens its /wake)
         self.remote = None                 # assigned only in Task 11
         self._closed_at: dict = {}         # session → the last time someone came to close it
         self._closed_lock = threading.Lock()
@@ -3017,7 +3046,8 @@ class Bridge:
             err.logged = True
             raise err
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        return self.httpd.server_address[1]
+        self.local_port = int(self.httpd.server_address[1])
+        return self.local_port
 
     def start_local_or_next(self) -> tuple:
         """0.2.1: `(port, moved_from)`. The default port taken by another program (seen on the maintainer's desktop)
@@ -3047,7 +3077,7 @@ class Bridge:
         ⚠️plaintext `http://` on loopback is an exception made for the test harness (the reference dispatcher runs
           on 127.0.0.1)."""
         url = str(self.cfg.get("remote_url") or "")
-        if not url or not self.cfg.get("remote_token"):
+        if not _paired(self.cfg):
             return False
         why = remote_url_refused(url)          # ⭐the same judgment as `scv pair` (only one is allowed to exist)
         if why:
@@ -3055,6 +3085,49 @@ class Bridge:
             return False
         self.remote = RemoteLeg(self)
         threading.Thread(target=self.remote.run, daemon=True).start()
+        return True
+
+    def wake(self, why: str) -> str:
+        """0.3.0 (spec B36/B39): dial out now. `"woke"` / `"awake"` (it already was: only the ten-minute clock starts
+        over — someone just asked for it) / `"not_paired"` / `"cannot_dial"` (config.json's remote_url is no good;
+        `start_remote` logged why; ⛔never spelled `refused`: that literal is `Handler._refuse`'s alone). ⭐Idempotent: a second wake never starts a second remote leg (P22)."""
+        with self._wake_lock:
+            if self.remote is not None:
+                self.woke_at = time.time()
+                return "awake"
+            if not _paired(self.cfg):
+                return "not_paired"
+            if not self.start_remote():
+                return "cannot_dial"
+            self.woke_at = time.time()
+            log("woke up (%s): the remote leg dials %s" % (why, self.remote.base))
+        return "woke"
+
+    def sleeps_in(self, now: float | None = None):
+        """Seconds until `idle_tick` hangs up the remote leg. `None` = asleep, a job is queued or running, or
+        `idle_sleep_s` is 0."""
+        leg, woke = self.remote, self.woke_at
+        if leg is None or woke is None or self.idle_s <= 0 or not leg.idle():
+            return None
+        quiet = self.awake.quiet_since(woke)
+        if quiet is None:
+            return None
+        return max(0.0, self.idle_s - ((time.time() if now is None else now) - quiet))
+
+    def idle_tick(self, now: float | None = None) -> bool:
+        """Called by the main loop every `AWAKE_EVERY_S` (spec B38): quiet for `idle_sleep_s` ⇒ hang up and stop
+        dialing — from here on not one byte goes out until the next wake. ⭐Judged and hung up inside the same lock
+        `wake` takes: a wake landing in between must never be undone by a judgment made before it.
+        ⚠️The stream open at that moment ends at its next line (the dispatcher's keepalive); `RemoteLeg.stop()`
+        drops whatever its send channel still holds (and says so) — the check above never gets here with a job
+        queued or running."""
+        with self._wake_lock:
+            left = self.sleeps_in(now)
+            if left is None or left > 0:
+                return False
+            leg, self.remote, self.woke_at = self.remote, None, None
+        leg.stop()
+        log("went back to sleep (no remote job for %ds): not one byte goes out until the next wake" % int(self.idle_s))
         return True
 
     def cli_ver(self, model_id) -> str:
@@ -3073,12 +3146,18 @@ class Bridge:
           review M3): the original words in `blocked`/`version` can carry an absolute local path (a pastable login
           command, the OS's own words, a path with a user name in it); the reason and what to do about it are left
           for the local doctor. 📎 NOTES.md::snapshot-is-expensive"""
+        leg = self.remote
+        if leg is not None:
+            left = self.sleeps_in()
+            remote = dict(leg.describe(), sleeps_in_s=None if left is None else int(left))
+        else:
+            remote = {"state": "asleep" if _paired(self.cfg) else "off"}
         out = self.sessions.counts()
         out.update(version=VERSION, protocol=PROTOCOL, uptime_s=int(time.time() - self.started_at),
                    models=self.cat, children=len(children()),
                    families={f: {"version": _cli_version(i["version"]), "blocked": bool(i["blocked"])}
                              for f, i in self.found.items()},
-                   remote=(self.remote.describe() if self.remote else {"state": "off"}))
+                   remote=remote)
         return out
 
     def note_close(self, sid: str, order=None, detach=False) -> bool:
@@ -3189,7 +3268,7 @@ def _make_handler(bridge: Bridge):
             gave. ⇒ turned off; whatever needs saying, we say it ourselves."""
             return
 
-        # ---- Exits: the response only ever goes out through these two doors
+        # ---- Exits: the response only ever goes out through these three doors (the third, `_page`, is `GET /wake`'s alone)
         def _json(self, status: int, obj: dict, extra: dict | None = None) -> None:
             data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
             if self._sent:
@@ -3203,6 +3282,24 @@ def _make_handler(bridge: Bridge):
             self.send_header("Content-Length", str(len(data)))
             for k, v in list(self._cors.items()) + list((extra or {}).items()):
                 self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _page(self, status: int, text: str, close: bool) -> None:
+            """0.3.0: the third exit, `GET /wake`'s alone — a page for a browser window, never JSON. ⭐No CORS header
+            ever (this path skipped the `Origin` guard, see `_guard`): a page on another site can open it, but can
+            never read what it says."""
+            # `window` + chr(46): the address gate would read the two words joined by a dot as a host name
+            script = (("<script>setTimeout(function () { window" + chr(46) + "close(); }, %d);</script>") % WAKE_CLOSE_MS) if close else ""
+            data = ("<!doctype html><meta charset=utf-8><title>scv</title><p>%s</p>%s" % (text, script)).encode("utf-8")
+            if self._sent:
+                log("⚠️ the local API tried to send a second response (status=%d, GET /wake) ⇒ only logging this line" % status)
+                return
+            self._sent = True
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
 
@@ -3255,7 +3352,7 @@ def _make_handler(bridge: Bridge):
 
         # ---- The four guards (B23), cheapest to most expensive; each one has its own counter-example test for
         #      "leave this out and it gets through"
-        def _guard(self, need_token: bool, need_json: bool) -> bool:
+        def _guard(self, need_token: bool, need_json: bool, any_origin: bool = False) -> bool:
             host = (self.headers.get("Host") or "").strip().lower()
             if host.startswith("["):        # `[::1]:8765` ⇒ `::1`
                 host = host[1:].split("]")[0]
@@ -3265,7 +3362,9 @@ def _make_handler(bridge: Bridge):
                 # DNS rebinding: the request really did land on the loopback port, but the browser thinks it is visiting evil.example
                 return self._refuse(403, "forbidden_host", "the Host header is not a loopback address: %s" % repr(host)[:64])
             origin = self.headers.get("Origin")
-            if origin:
+            if origin and not any_origin:
+                # ⭐`any_origin` is `GET /wake`'s alone (0.3.0, spec B39): all it can do is make the bridge dial the one
+                #   service it is already paired with, and it never echoes this header back ⇒ letting it in costs nothing
                 if origin not in (bridge.cfg.get("allowed_origins") or []):
                     return self._refuse(403, "forbidden_origin", "a request carrying an Origin header is refused by default: %s" % repr(origin)[:128])
                 # ⭐only echo this header back once it is configured, never echo it unconditionally
@@ -3363,6 +3462,9 @@ def _make_handler(bridge: Bridge):
                     self._json(200, {"object": "list", "data": [
                         {"id": m, "object": "model", "created": born, "owned_by": m.split("/")[0]}
                         for m in bridge.cat]})
+            elif path == "/wake":
+                if self._guard(False, False, any_origin=True):
+                    self._page(*WAKE_PAGES[bridge.wake("GET /wake")])
             else:
                 self._refuse(404, "not_found", "no such path: %s" % repr(self.path)[:128])
 
@@ -3665,7 +3767,7 @@ def redirect_refused(req, newurl: str) -> str:
       urllib drops the request body when it follows a 301/302/303, and does not follow a 307/308 POST at all)
       only block an https downgrade.
     🔴③ a request that started from loopback never follows a redirect out beyond loopback (13d, item 5):
-      `local_get` should only ever dial loopback, but whatever answers on that port could be some other program
+      `local_fetch` should only ever dial loopback, but whatever answers on that port could be some other program
       (on this dev machine, 8765 is exactly that), and it can reply with a 302, sending
       `scv status`/`stop`/`doctor` off to the outside network with a GET. "Is it loopback" uses the same
       plaintext judgment (`_loopback_http`)."""
@@ -3701,7 +3803,7 @@ def _open(req, timeout: float, *handlers):
     """The one and only door for dialing (`_fetch` reading a reply — the `limit=0` branch never reads a single
     byte — and `_stream_once` reading the stream both go through it; the dialing map is pinned by
     test_95::Doors): every request gets `_Redirects` installed on it (`urlopen`'s default opener would follow any
-    redirect at all); `handlers` is how `local_get` passes in the one that routes around the proxy.
+    redirect at all); `handlers` is how `local_fetch` passes in the one that routes around the proxy.
     ⭐still honors the proxy environment variables as usual (B32: `build_opener` carries a `ProxyHandler` by
       default). A non-2xx raises `HTTPError`, which is itself a response object — call `close()` on it before
       discarding it (I-4); what to do about failure (retry / return None / give a human message) is up to the
@@ -3834,12 +3936,15 @@ def hello_payload(bridge: Bridge) -> dict:
     """B24: the whitelist of fields reported. Never add one more key here without first changing PROTOCOL.md and
     test_hello_is_a_whitelist.
     ⚠️a whitelist controls the key names, not the values ⇒ the `cli_version` slot has a separate shape check of
-      its own, see `_cli_version()`."""
+      its own, see `_cli_version()`.
+    0.3.0: `local_port` = this bridge's local API port (a service's page opens `http://127.0.0.1:<local_port>/wake` to
+      wake it, spec B40)."""
     return {"protocol": PROTOCOL, "bridge_version": VERSION, "os": os.name + "/" + sys.platform,
             "python": "%d.%d" % sys.version_info[:2],
             "families": [{"family": f, "cli_version": _cli_version(i["version"])}
                          for f, i in bridge.found.items() if not i["blocked"]],
-            "models": bridge.cat, "max_concurrent": int(bridge.cfg.get("max_concurrent") or 4)}
+            "models": bridge.cat, "max_concurrent": int(bridge.cfg.get("max_concurrent") or 4),
+            "local_port": int(bridge.local_port)}
 
 
 def remote_request(d: dict) -> dict:
@@ -3958,6 +4063,12 @@ class RemoteLeg:
         #   `chat.completion` hitting the URL-detector gate).
         return {"state": self.state, "url": self.base, "connects": self.connects,
                 "refus" + "ed": self.refused}
+
+    def idle(self) -> bool:
+        """No job waiting in the send channel for its ack, none in flight (0.3.0: the sleep check's other half, next
+        to KeepAwake's count — a job still waiting for its ack is not in KeepAwake yet)."""
+        with self._early_lock:
+            return not self._queued and not self._cancels
 
     def stop(self) -> None:
         self._stop.set()
@@ -4587,14 +4698,24 @@ def _cmd_failed(what: str, next_step: str, detail: str = "") -> int:
     return 1
 
 
-def local_get(port: int, path: str, timeout: float = 3.0):
-    """Ask itself. Must bypass the environment proxy: when the user has set HTTP_PROXY without configuring
-    no_proxy, going through the proxy cannot reach 127.0.0.1 on this machine (B32).
+def local_fetch(port: int, path: str, timeout: float = 3.0):
+    """Ask itself, raw bytes (`None` = nothing answered, or not 2xx). Must bypass the environment proxy: when the user
+    has set HTTP_PROXY without configuring no_proxy, going through the proxy cannot reach 127.0.0.1 on this machine
+    (B32).
     ⭐It is one of the named outbound points in `NET_CALLERS`, but it only ever dials loopback: the address comes
       only from section ①'s `LOCAL_URL`; never follow a 302 outside loopback (`redirect_refused` ③)."""
     try:
-        return json.loads(_fetch(LOCAL_URL % port + path, timeout, urllib.request.ProxyHandler({})).decode("utf-8"))
+        return _fetch(LOCAL_URL % port + path, timeout, urllib.request.ProxyHandler({}))
     except NET_ERRORS:         # closes over `HTTPError` / the whole exception family, at the `_open` door
+        return None
+
+
+def local_get(port: int, path: str, timeout: float = 3.0):
+    """`local_fetch` read as JSON (`None` = no answer, or not JSON)."""
+    raw = local_fetch(port, path, timeout)
+    try:
+        return None if raw is None else json.loads(raw.decode("utf-8"))
+    except ValueError:         # UnicodeDecodeError ⊂ ValueError
         return None
 
 
@@ -4867,7 +4988,8 @@ def spawn_detached(argv: list) -> tuple:
 
 
 def serve_until(bridge, stop: threading.Event) -> None:
-    """`scv run`'s main loop: reclaims idle sessions on the clock (A6). ⭐Wakes every 0.5s, never `wait(60)`: on
+    """`scv run`'s main loop: reclaims idle sessions on the clock (A6), keeps the machine awake and puts an idle remote
+    leg to sleep (0.2.0 / 0.3.0). ⭐Wakes every 0.5s, never `wait(60)`: on
     win32, when the main thread is stuck in a long wait, Ctrl+C only gets handled once it wakes up (⏳this is
     written to CPython's known behaviour, not measured on this machine)."""
     last = poked = time.time()
@@ -4875,6 +4997,10 @@ def serve_until(bridge, stop: threading.Event) -> None:
         if time.time() - poked >= AWAKE_EVERY_S:
             poked = time.time()
             bridge.awake.tick()
+            try:
+                bridge.idle_tick()          # 0.3.0 (spec B38): quiet for idle_sleep_s ⇒ back to sleep
+            except Exception as e:          # the sleep check blowing up must never take the whole bridge down with it
+                log("❌ the sleep check blew up (the bridge keeps running, still awake): %s: %s" % (type(e).__name__, e))
         if time.time() - last >= GC_EVERY_S:
             last = time.time()
             try:
@@ -4913,6 +5039,21 @@ def sweep_work() -> int:
         log("cleaned up %d leftover session work director%s under work/ (left behind by a hard stop): %s" % (
             len(gone), "y" if len(gone) == 1 else "ies", ", ".join(gone[:8])))
     return len(gone)
+
+
+def _wake_at_start(bridge, cfg: dict) -> str:
+    """0.3.0 (spec B35): a bridge starts asleep — the one exception is the first start after `scv pair` (it has a job
+    to do: show up in the service that just handed out the code). ⭐The mark is cleared **before** waking: a bridge
+    that dies right after must never wake again on the next start. Returns the log's words for the remote leg."""
+    if not _paired(cfg):
+        return "off (not paired)"
+    if not cfg.get("wake_on_start"):
+        return "asleep: it sends nothing until woken (GET /wake, or the wake subcommand)"
+    cfg["wake_on_start"] = False
+    save_config(cfg)
+    if bridge.wake("the first start after pairing") == "woke":
+        return "awake, dialing %s (the first start after pairing)" % cfg["remote_url"]
+    return "asleep: waking it at start did not work (the line above says why)"
 
 
 def cmd_run(args) -> int:
@@ -4958,9 +5099,9 @@ def cmd_run(args) -> int:
             with contextlib.suppress(ValueError, OSError):
                 signal.signal(sig, lambda *_: stop.set())
     try:
-        paired = bridge.start_remote()
+        how = _wake_at_start(bridge, cfg)
         log("scv %s is up (pid %d): the local API is on %s:%d; models %s; remote leg %s" % (
-            VERSION, me, LOCAL_HOST, port, bridge.cat, bridge.remote.base if paired else "off (not paired)"))
+            VERSION, me, LOCAL_HOST, port, bridge.cat, how))
         serve_until(bridge, stop)
     finally:
         bridge.stop()
@@ -5077,6 +5218,55 @@ def cmd_status(args) -> int:
         print("⇒ these families are blocked and not being reported: %s; see doctor for why and what to do:" % ", ".join(blocked) + NL + self_cmd("doctor"), file=sys.stderr)
     if (health.get("remote") or {}).get("state") == "too_old":
         print("⇒ the remote leg refused this version; update (no arguments = use the pair the dispatcher gave in its last hello):" + NL + self_cmd("update"), file=sys.stderr)
+    rem = health.get("remote") or {}
+    if rem.get("state") == "asleep":
+        print("⇒ asleep: the remote leg sends nothing until woken — the service's page wakes it, or:" + NL + self_cmd("wake"), file=sys.stderr)
+    elif isinstance(rem.get("sleeps_in_s"), int):
+        print("⇒ awake: back to sleep in about %d minute(s) if no remote job comes" % max(1, -(-rem["sleeps_in_s"] // 60)), file=sys.stderr)
+    return 0
+
+
+WAKE_WAIT_S = 8.0      # final review I2: how long `wake` waits for the remote leg to get through before saying it did not
+
+
+def cmd_wake(args) -> int:
+    """0.3.0 (spec B36): wake the remote leg — starting the bridge first when it is not running (one command for both
+    cases). ⭐It knocks on the same `GET /wake` a browser does (one door for waking), then reads `/healthz` for the
+    verdict (`/wake` answers a page for a browser, not JSON).
+    ⭐"awake" means the stream is up (`streaming`), never just "it started dialing": a leg stuck retrying (the service
+    is down, a proxy is wrong, the token was replaced) used to be reported as awake with exit code 0, and the
+    player's agent then said "awake" while the game said "asleep" (final review I2)."""
+    cfg = load_config()
+    if not _paired(cfg):
+        return _cmd_failed("not paired: there is nothing to wake (a bridge that is not paired never dials out)",
+                           "pair it first (the service's page gives the code): append ' <url> --code <pairing code>' to this line and run it:"
+                           + NL + self_cmd("pair"))
+    port = int(cfg.get("port") or DEFAULT_CONFIG["port"])
+    if our_health(port) is None:
+        rc = cmd_start(args)
+        if rc:
+            return rc
+        port = int(load_config().get("port") or DEFAULT_CONFIG["port"])   # `start` may have moved it off a taken default
+    local_fetch(port, "/wake")
+    end = time.time() + WAKE_WAIT_S
+    while True:
+        rem = (our_health(port) or {}).get("remote") or {}
+        if rem.get("state") in ("streaming", "off", "too_old") or time.time() >= end:
+            break
+        time.sleep(0.25)
+    if rem.get("state") == "off":
+        # config.json says paired, the bridge on that port says not: it read its config before `pair` (and answered
+        # /wake with not_paired)
+        return _cmd_failed("the running bridge was started before it was paired, so it has nothing to wake",
+                           "stop it and start it again:" + NL + self_cmd("stop") + NL + self_cmd("start"))
+    if rem.get("state") != "streaming":
+        why = rem.get("refus" + "ed")      # spelled in pieces, like RemoteLeg.describe (the OneDoor gate)
+        return _cmd_failed("the bridge did not get through to the service within %d seconds (its remote leg says %r%s)"
+                           % (int(WAKE_WAIT_S), rem.get("state"), ": " + why if why else ""),
+                           "the last lines of bridge.log (below) say why", _log_tail())
+    idle = _config_seconds(cfg, "idle_sleep_s")
+    print("awake: the remote leg dials %s; %s" % (rem.get("url"), "it goes back to sleep after %d minute(s) without a remote job" % max(1, int(idle // 60))
+                                                    if idle > 0 else "it stays awake until the bridge stops (idle_sleep_s is 0)"))
     return 0
 
 
@@ -5372,12 +5562,13 @@ def cmd_pair(args) -> int:
                            "this is a problem on the other side: show this line to them")
     cfg = load_config()
     old = str(cfg.get("remote_url") or "")
-    cfg.update(remote_url=url, remote_token=token)
+    cfg.update(remote_url=url, remote_token=token, wake_on_start=True)   # 0.3.0 (spec B35): the first start after pairing is awake
     save_config(cfg)
     swapped = " (replacing the previous %s)" % old if old and old != url else ""
     log("pair: paired to %s%s" % (url, swapped))
     print(NL.join(["paired: %s%s. The token is stored in %s" % (url, swapped, spath("config.json")),
-                   "from the next time the bridge starts, it will dial out to: %s" % ", ".join(p for k, p in REMOTE_PATHS.items() if k != "pair"),
+                   "the next time the bridge starts it is awake and dials out to: %s (so the service sees it right away); "
+                   "every start after that is asleep until the service's page or the wake subcommand wakes it" % ", ".join(p for k, p in REMOTE_PATHS.items() if k != "pair"),
                    "if the bridge is currently running, it is not using this yet: stop it, then start it again:", self_cmd("stop"), self_cmd("start"),
                    "to disconnect this side: delete remote_token from config.json",
                    "installing from setup.md for someone? after the restart, finish its step 6 (ask them about an audit) and step 8 (note where the bridge is, and tell them where you noted it)"]))
@@ -5481,6 +5672,7 @@ def main(argv: list | None = None) -> int:
     sub.add_parser("start", help="start the bridge in the background")
     sub.add_parser("stop", help="stop the bridge running in the background")
     sub.add_parser("status", help="whether the bridge is running, and its state if so")
+    sub.add_parser("wake", help="wake the remote leg so it dials the paired service (starts the bridge first if it is not running)")
     sub.add_parser("token", help="print the local API's token")
     sub.add_parser("doctor", help="health check").add_argument("--live", action="store_true",
                                                     help="one real call per family (costs a little quota), and runs the canary")
@@ -5496,7 +5688,7 @@ def main(argv: list | None = None) -> int:
     if args.cmd == "version":
         print(VERSION)
         return 0
-    table = {"run": cmd_run, "start": cmd_start, "stop": cmd_stop, "status": cmd_status, "token": cmd_token,
+    table = {"run": cmd_run, "start": cmd_start, "stop": cmd_stop, "status": cmd_status, "wake": cmd_wake, "token": cmd_token,
              "doctor": cmd_doctor, "setup": cmd_setup, "pair": cmd_pair, "update": cmd_update}
     if args.cmd not in table:
         ap.print_help()

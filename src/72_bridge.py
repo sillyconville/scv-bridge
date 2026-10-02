@@ -32,6 +32,14 @@ class KeepAwake:
             self._busy = max(0, self._busy - 1)
             self._last = self._clock()
 
+    def quiet_since(self, since: float):
+        """0.3.0 (spec B38): when the remote leg last went quiet, counting from `since` (when it woke) — `None` while a
+        job is running. ⭐The same `_busy`/`_last` this class already keeps, never a second tally of jobs."""
+        with self._lock:
+            if self._busy > 0:
+                return None
+            return since if self._last is None else max(since, self._last)
+
     def wanted(self) -> bool:
         if self.window_s <= 0:
             return False
@@ -56,14 +64,21 @@ def _poke_idle_timer() -> None:
         _k32().SetThreadExecutionState(ES_SYSTEM_REQUIRED)
 
 
-def _awake_window(v) -> float:
-    """config.json's `keep_awake_s`: missing ⇒ 600; a number ≥ 0 ⇒ that; anything else ⇒ 600, said once."""
+def _config_seconds(cfg: dict, key: str) -> float:
+    """A seconds knob in config.json (`keep_awake_s`; 0.3.0's `idle_sleep_s`): missing ⇒ 600; a number ≥ 0 ⇒ that;
+    anything else ⇒ 600, said once per start."""
+    v = cfg.get(key)
     if v is None:
         return 600.0
     if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0:
         return float(v)
-    log("⚠️ config.json's keep_awake_s is not a number ≥ 0 (it is %r) ⇒ using 600" % (v,))
+    log("⚠️ config.json's %s is not a number ≥ 0 (it is %r) ⇒ using 600" % (key, v))
     return 600.0
+
+
+def _paired(cfg: dict) -> bool:
+    """Paired = both halves `scv pair` writes are there (the one judgment `start_remote`, `wake` and `/healthz` share)."""
+    return bool(cfg.get("remote_url")) and bool(cfg.get("remote_token"))
 
 
 class Bridge:
@@ -80,9 +95,16 @@ class Bridge:
         self.sessions = SessionManager(cfg, lambda: self.cat)
         self.joblog = JobLog()
         # 0.2.0: `keep_awake_s` — how long after the last remote job the machine is kept awake (0 = off)
-        self.awake = KeepAwake(_awake_window(cfg.get("keep_awake_s")))
+        self.awake = KeepAwake(_config_seconds(cfg, "keep_awake_s"))
+        # 0.3.0 (spec B35–B38): the remote leg sleeps — nothing dials until `wake()` (`GET /wake`, the wake
+        #   subcommand, or the first start after pairing), and `idle_tick()` hangs it up after `idle_sleep_s` quiet
+        #   (0 = never on its own)
+        self.idle_s = _config_seconds(cfg, "idle_sleep_s")
+        self.woke_at = None
+        self._wake_lock = threading.Lock()
         self.started_at = time.time()
         self.httpd = None
+        self.local_port = 0                # 0.3.0: this bridge's local API port, reported in hello (the lobby opens its /wake)
         self.remote = None                 # assigned only in Task 11
         self._closed_at: dict = {}         # session → the last time someone came to close it
         self._closed_lock = threading.Lock()
@@ -99,7 +121,8 @@ class Bridge:
             err.logged = True
             raise err
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
-        return self.httpd.server_address[1]
+        self.local_port = int(self.httpd.server_address[1])
+        return self.local_port
 
     def start_local_or_next(self) -> tuple:
         """0.2.1: `(port, moved_from)`. The default port taken by another program (seen on the maintainer's desktop)
@@ -129,7 +152,7 @@ class Bridge:
         ⚠️plaintext `http://` on loopback is an exception made for the test harness (the reference dispatcher runs
           on 127.0.0.1)."""
         url = str(self.cfg.get("remote_url") or "")
-        if not url or not self.cfg.get("remote_token"):
+        if not _paired(self.cfg):
             return False
         why = remote_url_refused(url)          # ⭐the same judgment as `scv pair` (only one is allowed to exist)
         if why:
@@ -137,6 +160,49 @@ class Bridge:
             return False
         self.remote = RemoteLeg(self)
         threading.Thread(target=self.remote.run, daemon=True).start()
+        return True
+
+    def wake(self, why: str) -> str:
+        """0.3.0 (spec B36/B39): dial out now. `"woke"` / `"awake"` (it already was: only the ten-minute clock starts
+        over — someone just asked for it) / `"not_paired"` / `"cannot_dial"` (config.json's remote_url is no good;
+        `start_remote` logged why; ⛔never spelled `refused`: that literal is `Handler._refuse`'s alone). ⭐Idempotent: a second wake never starts a second remote leg (P22)."""
+        with self._wake_lock:
+            if self.remote is not None:
+                self.woke_at = time.time()
+                return "awake"
+            if not _paired(self.cfg):
+                return "not_paired"
+            if not self.start_remote():
+                return "cannot_dial"
+            self.woke_at = time.time()
+            log("woke up (%s): the remote leg dials %s" % (why, self.remote.base))
+        return "woke"
+
+    def sleeps_in(self, now: float | None = None):
+        """Seconds until `idle_tick` hangs up the remote leg. `None` = asleep, a job is queued or running, or
+        `idle_sleep_s` is 0."""
+        leg, woke = self.remote, self.woke_at
+        if leg is None or woke is None or self.idle_s <= 0 or not leg.idle():
+            return None
+        quiet = self.awake.quiet_since(woke)
+        if quiet is None:
+            return None
+        return max(0.0, self.idle_s - ((time.time() if now is None else now) - quiet))
+
+    def idle_tick(self, now: float | None = None) -> bool:
+        """Called by the main loop every `AWAKE_EVERY_S` (spec B38): quiet for `idle_sleep_s` ⇒ hang up and stop
+        dialing — from here on not one byte goes out until the next wake. ⭐Judged and hung up inside the same lock
+        `wake` takes: a wake landing in between must never be undone by a judgment made before it.
+        ⚠️The stream open at that moment ends at its next line (the dispatcher's keepalive); `RemoteLeg.stop()`
+        drops whatever its send channel still holds (and says so) — the check above never gets here with a job
+        queued or running."""
+        with self._wake_lock:
+            left = self.sleeps_in(now)
+            if left is None or left > 0:
+                return False
+            leg, self.remote, self.woke_at = self.remote, None, None
+        leg.stop()
+        log("went back to sleep (no remote job for %ds): not one byte goes out until the next wake" % int(self.idle_s))
         return True
 
     def cli_ver(self, model_id) -> str:
@@ -155,12 +221,18 @@ class Bridge:
           review M3): the original words in `blocked`/`version` can carry an absolute local path (a pastable login
           command, the OS's own words, a path with a user name in it); the reason and what to do about it are left
           for the local doctor. 📎 NOTES.md::snapshot-is-expensive"""
+        leg = self.remote
+        if leg is not None:
+            left = self.sleeps_in()
+            remote = dict(leg.describe(), sleeps_in_s=None if left is None else int(left))
+        else:
+            remote = {"state": "asleep" if _paired(self.cfg) else "off"}
         out = self.sessions.counts()
         out.update(version=VERSION, protocol=PROTOCOL, uptime_s=int(time.time() - self.started_at),
                    models=self.cat, children=len(children()),
                    families={f: {"version": _cli_version(i["version"]), "blocked": bool(i["blocked"])}
                              for f, i in self.found.items()},
-                   remote=(self.remote.describe() if self.remote else {"state": "off"}))
+                   remote=remote)
         return out
 
     def note_close(self, sid: str, order=None, detach=False) -> bool:

@@ -32,11 +32,11 @@ If none of them prints Python 3.9 or newer, **ask the user before installing any
 Use `curl` exactly as below, not a fetch tool that summarises pages: the bytes must be exact. `--create-dirs` creates `$HOME/.scv` if it does not exist.
 
 ```powershell
-curl.exe -fsSL --create-dirs https://raw.githubusercontent.com/sillyconville/scv-bridge/4e8523c8d830b75ef7b1fb71b7a55a54b85d0f1a/scv.py -o "$HOME/.scv/scv.py"
+curl.exe -fsSL --create-dirs https://raw.githubusercontent.com/sillyconville/scv-bridge/<COMMIT>/scv.py -o "$HOME/.scv/scv.py"
 ```
 
 ```bash
-curl -fsSL --create-dirs https://raw.githubusercontent.com/sillyconville/scv-bridge/4e8523c8d830b75ef7b1fb71b7a55a54b85d0f1a/scv.py -o "$HOME/.scv/scv.py"
+curl -fsSL --create-dirs https://raw.githubusercontent.com/sillyconville/scv-bridge/<COMMIT>/scv.py -o "$HOME/.scv/scv.py"
 ```
 
 ## 3. Check its sha256
@@ -51,7 +51,7 @@ Compute the file's sha256 with the Python from step 1:
 <python> -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" "$HOME/.scv/scv.py"
 ```
 
-It must equal this value — sha256 `420925ab1e0c8bc3aaf60a58e5ae7b878686df179955f06c47b4bf689bc08d02`. If the two differ, stop, do not run the file, and tell the user both values.
+It must equal this value — sha256 `<SHA256>`. If the two differ, stop, do not run the file, and tell the user both values.
 
 ## 4. Run `setup`
 
@@ -89,14 +89,14 @@ Only if the user wants the bridge to take jobs from a remote service and has a p
 <python> "$HOME/.scv/scv.py" pair <url> --code <code>
 ```
 
-Then run the stop and start commands that `pair` prints. Without pairing, a running bridge sends nothing to any outside address; `update` fetches a file from GitHub only when it is run, and the CLIs the bridge starts connect to their own vendors as usual.
+Then run the stop and start commands that `pair` prints. The bridge started right after pairing is awake, so the service sees it at once; every later start is asleep (it sends nothing) until the service's page wakes it or someone runs the `wake` subcommand, and after 10 minutes without a job it goes back to sleep. Without pairing, a running bridge sends nothing to any outside address; `update` fetches a file from GitHub only when it is run, and the CLIs the bridge starts connect to their own vendors as usual.
 
 ## 8. Remember where the bridge is
 
-So that next time the user can just say "start the bridge" (on a later day, in a new session), save one short
+So that next time the user can just say "wake the bridge" or "start the bridge" (on a later day, in a new session), save one short
 note to whatever you keep across sessions for this user — a memory feature, or a user-level instructions file.
 The note says: the bridge is `scv.py` at `$HOME/.scv/scv.py`, run with the Python from step 1; its subcommands
-`start`, `stop`, `status`, `doctor` and `update` are run as `<python> "$HOME/.scv/scv.py" <subcommand>`; and the
+`start`, `stop`, `status`, `wake`, `doctor` and `update` are run as `<python> "$HOME/.scv/scv.py" <subcommand>`; and the
 thin skill for Claude Code, `skill/SKILL.md` in the bridge's repository, maps what the user asks for to one
 subcommand. Write the note with the real Python command from step 1 in place of `<python>`.
 

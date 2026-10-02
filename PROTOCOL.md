@@ -46,7 +46,7 @@ replies 403.
 ## POST /bridge/hello
 The request body has **exactly** these keys (a whitelist; one extra key is a bug):
 `protocol`(int) · `bridge_version` · `os`(`nt`/`posix`+`sys.platform`) · `python` ·
-`families`(`[{"family","cli_version"}]`) · `models`(`["claude/haiku", …]`) · `max_concurrent`(int).
+`families`(`[{"family","cli_version"}]`) · `models`(`["claude/haiku", …]`) · `max_concurrent`(int) · `local_port`(int).
 Never an e-mail address, organization, user name, host name, or path.
 ⚠️`cli_version` is only ever the **version-shaped** part (`1.2.3`) or an empty string: what a CLI reports about
 itself can carry the executable's full path embedded in it, and the bridge filters it by shape before sending it
@@ -71,6 +71,21 @@ and a mismatch in either shape ⇒ `scv update` refuses and changes nothing. Wha
 `https://raw.githubusercontent.com/sillyconville/scv-bridge/<commit>/scv.py` (i.e., the bytes committed at that
 commit), and it is **those bytes'** sha256 that gets compared ⇒ the `sha256` the dispatcher supplies must be
 computed from the bytes of `git show <commit>:scv.py`.
+
+`local_port` is the port of the bridge's local API on its own machine (loopback only; `0` = not known). A dispatcher's
+web page can open `http://127.0.0.1:<local_port>/wake` in a small window of its own to wake a sleeping bridge (next
+section). Bridges before 0.3.0 do not send it.
+
+## A bridge that sleeps (0.3.0)
+
+A bridge 0.3.0 or newer **starts asleep**: its local API is up, but it sends no `hello` and opens no stream, so the
+dispatcher sees it as offline. Two things wake it: `GET http://127.0.0.1:<local_port>/wake` on its own machine (no
+token; a page, never JSON — a dispatcher's web page opens it in a small window when the player clicks) and the
+`wake` subcommand. Awake, it connects exactly as described below. After `idle_sleep_s` seconds (600 by default;
+`0` = never) with no job queued or running, counting from the later of waking and the end of the last job, it closes
+its stream and stops dialing; it does not tell the dispatcher first. The one start that is awake by itself is the
+first start after `scv pair`. A job pushed at the moment it goes to sleep gets no `ack` ⇒ handle it as "never
+delivered": the bridge's next stream after it wakes carries no `Last-Event-ID`. Bridges before 0.3.0 never sleep.
 
 ## GET /bridge/stream (SSE)
 Every event carries an increasing integer `id:` (**1–20 decimal digits**, with an optional single space after the

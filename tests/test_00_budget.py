@@ -71,7 +71,9 @@ SCV_IMPORTS = {
 # `RemoteLeg`: building the request, sending it back, receiving the stream. ⛔One extra name has to be an explicit
 # decision each time.
 # Task 12 added `local_get`: the subcommand asking its own `/healthz`, dialing **loopback only** (the address is
-# section ①'s `LOCAL_URL`), and bypassing the environment proxy.
+# section ①'s `LOCAL_URL`), and bypassing the environment proxy. 0.3.0 split it: the dialing half is now
+# `local_fetch` (raw bytes: the wake subcommand knocks on `GET /wake`, which answers a page), and `local_get` only
+# reads those bytes as JSON — so `local_fetch` is the name on this list.
 # Task 13 (carry-forward 2/3): "dial once, read back the response body" was folded into **one door**, `_fetch`
 #   (the whole exception family + `HTTPError.close()` + a cap on how much of the response body it reads —
 #   `_post`/`local_get` each used to copy their own version, and this batch would have had to copy two more) ⇒
@@ -84,7 +86,7 @@ SCV_IMPORTS = {
 #   `limit=0` branch ⛔ never reads) and `_stream_once` (reads the stream) both go through it, so they are out from
 #   here too. "Who calls `_open`/`_fetch`" is pinned down by tests/test_95_setup_pair_update.py::Doors (⛔
 #   otherwise this gate would be blind to a new caller reaching the dial through the door).
-NET_CALLERS = {"_request", "local_get", "_open", "cmd_pair", "cmd_update"}
+NET_CALLERS = {"_request", "local_fetch", "_open", "cmd_pair", "cmd_update"}
 # Network-facing modules: after `from X import Y`, `Y(...)`'s dotted full name **no longer has the module name in
 # it** ⇒ these names have to be collected first.
 # ⭐The last five were merged in by re-review two, I-2 (a pure tightening: today's scv.py uses none of them):
@@ -972,6 +974,9 @@ class Budget(unittest.TestCase):
         2026-09-27, lead raised 5500→5550 for 0.2.1 (the Plan 2B walkthrough with a real Codex): measured +32
         (5486→5518: the local API moving off a taken default port, `start` waiting on the port the bridge reports,
         `pair` and `setup` pointing back at setup.md steps 6 and 8); 32 lines of headroom.
+        2026-09-28, lead raised 5550→5750 for 0.3.0 (the sleeping bridge, spec 2026-09-28-bridge-sleep-wake): measured
+        +174 (5518→5692: the sleep/wake switch and its clock, `GET /wake` and its page, the wake subcommand, `status`
+        saying asleep/awake, hello's `local_port`); 58 lines of headroom.
         ⛔**The budget loosening ⛔ does not mean the archaeology a compression pass moved out should move back
         in** — the judge has not changed by one word (see NOTES.md::line-budget-3000)."""
         self.assertLessEqual(len(SRC.splitlines()), scv.LINE_BUDGET)
@@ -979,7 +984,7 @@ class Budget(unittest.TestCase):
         #   pulling its weight first, ⛔ never just raise the budget" ⇒ raising the budget has to be an
         #   **explicit** decision (with the reasoning above changed right along with it), ⛔ never someone quietly
         #   bumping 2000 up a bit.
-        self.assertEqual(scv.LINE_BUDGET, 5550)
+        self.assertEqual(scv.LINE_BUDGET, 5750)
 
     def test_the_gates_it_leans_on_really_exist(self):
         """The docstring above now carries the weight that used to belong to the line count ⇒ every gate it names

@@ -776,6 +776,30 @@ class KeepAwakeUnit(unittest.TestCase):
         timer once and leaves no state behind). A non-zero return means it worked."""
         self.assertNotEqual(scv._k32().SetThreadExecutionState(scv.ES_SYSTEM_REQUIRED), 0)
 
+    def test_quiet_since_counts_from_the_later_of_waking_and_the_last_job(self):
+        """0.3.0 (spec B38): the sleep clock starts at the later of "woke up" and "the last job ended"; `None` while a
+        job runs. ⭐The same `_busy`/`_last` this class already keeps — never a second tally of jobs."""
+        now = [100.0]
+        ka = scv.KeepAwake(600.0, poke=lambda: None, clock=lambda: now[0])
+        self.assertEqual(ka.quiet_since(50.0), 50.0, "no job yet: counts from waking")
+        ka.begin()
+        self.assertIsNone(ka.quiet_since(50.0), "a job is running")
+        now[0] = 150.0
+        ka.end()
+        self.assertEqual(ka.quiet_since(50.0), 150.0, "the job ended after waking")
+        self.assertEqual(ka.quiet_since(200.0), 200.0, "woke again after the job")
+
+    def test_config_seconds(self):
+        """`keep_awake_s` and 0.3.0's `idle_sleep_s` share one reader: missing ⇒ 600, a number ≥ 0 ⇒ that (0 is
+        allowed: "off"), anything else ⇒ 600 and one line naming the key."""
+        with mock.patch.object(scv, "log") as lg:
+            self.assertEqual(scv._config_seconds({}, "idle_sleep_s"), 600.0)
+            self.assertEqual(scv._config_seconds({"idle_sleep_s": 0}, "idle_sleep_s"), 0.0)
+            self.assertEqual(scv._config_seconds({"idle_sleep_s": "10"}, "idle_sleep_s"), 600.0)
+            self.assertEqual(scv._config_seconds({"idle_sleep_s": True}, "idle_sleep_s"), 600.0)
+        self.assertEqual(lg.call_count, 2)
+        self.assertIn("idle_sleep_s", lg.call_args[0][0])
+
 
 if __name__ == "__main__":
     unittest.main()

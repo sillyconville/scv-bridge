@@ -554,6 +554,17 @@ class Pair(_Fresh):
     def pair(self, url, code="GOOD"):
         return log_lines_during(lambda: scv.cmd_pair(ns(url=url, code=code)))
 
+    def test_a_good_pair_leaves_the_next_start_awake(self):
+        """0.3.0 (spec B35): `pair` marks the next start to be awake (the service that handed out the code should see
+        the bridge right away), and says so."""
+        d = Dispatcher()
+        url = d.start()
+        self.addCleanup(d.stop)
+        rc, _lines, out, err = self.pair(url)
+        self.assertEqual(rc, 0, out + err)
+        self.assertIs(scv.load_config()["wake_on_start"], True)
+        self.assertIn("awake", out)
+
     def test_good_code_saves_url_and_token_and_a_bad_one_changes_nothing(self):
         d = Dispatcher()
         url = d.start()
@@ -738,7 +749,7 @@ class Doors(unittest.TestCase):
         self.assertEqual(self.callers("_Redirects"), {"_open"})
         self.assertEqual(self.callers("redirect_refused"), {"redirect_request"})
         self.assertEqual(self.callers("_open"), {"_fetch", "_stream_once"})
-        self.assertEqual(self.callers("_fetch"), {"_post", "local_get", "cmd_pair", "cmd_update"})
+        self.assertEqual(self.callers("_fetch"), {"_post", "local_fetch", "cmd_pair", "cmd_update"})
 
 
 class Redirects(unittest.TestCase):

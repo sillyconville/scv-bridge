@@ -78,7 +78,7 @@ def redirect_refused(req, newurl: str) -> str:
       urllib drops the request body when it follows a 301/302/303, and does not follow a 307/308 POST at all)
       only block an https downgrade.
     🔴③ a request that started from loopback never follows a redirect out beyond loopback (13d, item 5):
-      `local_get` should only ever dial loopback, but whatever answers on that port could be some other program
+      `local_fetch` should only ever dial loopback, but whatever answers on that port could be some other program
       (on this dev machine, 8765 is exactly that), and it can reply with a 302, sending
       `scv status`/`stop`/`doctor` off to the outside network with a GET. "Is it loopback" uses the same
       plaintext judgment (`_loopback_http`)."""
@@ -114,7 +114,7 @@ def _open(req, timeout: float, *handlers):
     """The one and only door for dialing (`_fetch` reading a reply — the `limit=0` branch never reads a single
     byte — and `_stream_once` reading the stream both go through it; the dialing map is pinned by
     test_95::Doors): every request gets `_Redirects` installed on it (`urlopen`'s default opener would follow any
-    redirect at all); `handlers` is how `local_get` passes in the one that routes around the proxy.
+    redirect at all); `handlers` is how `local_fetch` passes in the one that routes around the proxy.
     ⭐still honors the proxy environment variables as usual (B32: `build_opener` carries a `ProxyHandler` by
       default). A non-2xx raises `HTTPError`, which is itself a response object — call `close()` on it before
       discarding it (I-4); what to do about failure (retry / return None / give a human message) is up to the
@@ -247,12 +247,15 @@ def hello_payload(bridge: Bridge) -> dict:
     """B24: the whitelist of fields reported. Never add one more key here without first changing PROTOCOL.md and
     test_hello_is_a_whitelist.
     ⚠️a whitelist controls the key names, not the values ⇒ the `cli_version` slot has a separate shape check of
-      its own, see `_cli_version()`."""
+      its own, see `_cli_version()`.
+    0.3.0: `local_port` = this bridge's local API port (a service's page opens `http://127.0.0.1:<local_port>/wake` to
+      wake it, spec B40)."""
     return {"protocol": PROTOCOL, "bridge_version": VERSION, "os": os.name + "/" + sys.platform,
             "python": "%d.%d" % sys.version_info[:2],
             "families": [{"family": f, "cli_version": _cli_version(i["version"])}
                          for f, i in bridge.found.items() if not i["blocked"]],
-            "models": bridge.cat, "max_concurrent": int(bridge.cfg.get("max_concurrent") or 4)}
+            "models": bridge.cat, "max_concurrent": int(bridge.cfg.get("max_concurrent") or 4),
+            "local_port": int(bridge.local_port)}
 
 
 def remote_request(d: dict) -> dict:

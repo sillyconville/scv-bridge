@@ -1649,6 +1649,32 @@ class GcByTheClock(_Staged):
             t.join(10)
             scv.AWAKE_EVERY_S = old
 
+    def test_the_main_loop_puts_an_idle_bridge_to_sleep(self):
+        """0.3.0 (spec B38): the one place that asks "quiet long enough?" is the main loop, every `AWAKE_EVERY_S`;
+        the check blowing up once never takes the bridge down (it says so once and keeps going)."""
+        b = mock.Mock()
+        b.sessions.gc_idle.return_value = 0
+        calls = []
+
+        def tick():
+            calls.append(1)
+            if len(calls) == 1:
+                raise OSError("the disk said no")
+            return False
+        b.idle_tick.side_effect = tick
+        stop = threading.Event()
+        old, scv.AWAKE_EVERY_S = scv.AWAKE_EVERY_S, 0.1
+        t = threading.Thread(target=scv.serve_until, args=(b, stop), daemon=True)
+        try:
+            _rc, lines, _o, _e = log_lines_during(lambda: (t.start(), time.sleep(1.8)))
+            self.assertTrue(t.is_alive())
+            self.assertGreaterEqual(len(calls), 2)
+            self.assertEqual(len([x for x in lines if "the sleep check blew up" in x]), 1, lines)
+        finally:
+            stop.set()
+            t.join(10)
+            scv.AWAKE_EVERY_S = old
+
 
 # ━━ The ones that start a subprocess (really running `python scv.py start`)
 class Lifecycle(_Staged):
@@ -1827,21 +1853,91 @@ class Lifecycle(_Staged):
         self.assertIn("CLAUDE_CODE_EFFORT_LEVEL", facts["env"]["changes"])
         self.assertEqual([v for v in fake.values() if v in out + pid_file().read_text(encoding="utf-8")], [])   # never a value
 
-    def test_the_remote_leg_comes_up_inside_scv_run(self):
-        """A7: `start_remote()` used to have zero production callers, and Task 11's end-to-end cases all started the
-        bridge in-process ⇒ this case proves it can really come up on the subcommand path."""
+    def _paired_to(self, d, **extra):
+        cfg = scv.load_config()
+        cfg.update(remote_url=d.start(), remote_token=d.token, **extra)
+        scv.save_config(cfg)
+        self.addCleanup(d.stop)
+
+    def test_the_remote_leg_comes_up_inside_scv_run_only_once_woken(self):
+        """A7 (a real `scv run`, never in-process) + 0.3.0 (spec B35/B36/B41): a plain start of a paired bridge is
+        asleep — not one hello, not one stream, and `status` says asleep with the wake command; `wake` makes it dial,
+        and `status` then says when it goes back to sleep."""
+        d = Dispatcher()
+        self._paired_to(d)
+        rc, out, err = self.scv("start")
+        self.assertEqual(rc, 0, out + err)
+        time.sleep(2.0)
+        self.assertEqual((d.hellos, d.connects), ([], 0), "a plain start dialed out")
+        rc, out, err = self.scv("status")
+        self.assertEqual((rc, json.loads(out)["remote"]), (0, {"state": "asleep"}))
+        self.assertIn("asleep", err)
+        self.assertEqual(helpers.door_lines_missing(err, "wake"), [], err)
+        rc, out, err = self.scv("wake")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("awake", out)
+        self.assertTrue(d.wait(lambda: d.hellos and d.connects, 20), (d.hellos, d.connects))
+        self.assertEqual(d.hellos[0]["bridge_version"], scv.VERSION)
+        rc, out, err = self.scv("status")
+        self.assertEqual(json.loads(out)["remote"]["state"], "streaming")
+        self.assertIn("back to sleep in about 10 minute", err)
+
+    def test_wake_starts_a_stopped_bridge_first(self):
+        d = Dispatcher()
+        self._paired_to(d)
+        rc, out, err = self.scv("wake")
+        self.assertEqual(rc, 0, out + err)
+        self.assertIn("up: pid", out, "wake did not start the bridge first")
+        self.assertTrue(d.wait(lambda: d.connects >= 1, 20))
+
+    def test_the_first_start_after_pairing_is_awake_and_only_that_one(self):
+        """spec B35 (the maintainer, 2026-09-28: the first start after installing has a job to do): `pair` leaves
+        `wake_on_start`; the next start wakes and clears it **before** waking; the start after that is asleep again."""
+        d = Dispatcher()
+        self._paired_to(d, wake_on_start=True)
+        rc, out, err = self.scv("start")
+        self.assertEqual(rc, 0, out + err)
+        self.assertTrue(d.wait(lambda: d.connects >= 1, 20), "the first start after pairing did not wake")
+        self.assertIs(scv.load_config()["wake_on_start"], False, "the mark was not cleared")
+        rc, out, err = self.scv("stop")
+        self.assertEqual(rc, 0, out + err)
+        n = len(d.hellos)
+        rc, out, err = self.scv("start")
+        self.assertEqual(rc, 0, out + err)
+        time.sleep(2.0)
+        self.assertEqual(len(d.hellos), n, "the second start after pairing woke too")
+
+    def test_wake_without_pairing_says_so(self):
+        rc, out, err = self.scv("wake")
+        self.assertEqual(rc, 1)
+        self.assertIn("not paired", out + err)
+        self.assertIsNone(scv.local_get(self.port, "/healthz"), "wake started a bridge that has nothing to wake")
+
+    def test_wake_that_does_not_get_through_says_so(self):
+        """Final review I2: the remote leg wakes but cannot reach the service (nothing listens there any more) ⇒ exit 1
+        with the leg's state, never "awake" (the player's agent would say it is awake while the game says asleep)."""
         d = Dispatcher()
         url = d.start()
-        self.addCleanup(d.stop)
+        d.stop()
         cfg = scv.load_config()
         cfg.update(remote_url=url, remote_token=d.token)
         scv.save_config(cfg)
+        rc, out, err = self.scv("wake")
+        self.assertEqual(rc, 1, out + err)
+        self.assertNotIn("awake:", out)
+        self.assertIn("did not get through", out + err)
+
+    def test_wake_of_a_bridge_started_before_pairing_says_to_restart_it(self):
+        """Final review I2 (sub-case): the running bridge read its config before `pair` ⇒ it answers /wake with
+        not_paired; `wake` says to stop and start it, never a bare "did not wake up"."""
         rc, out, err = self.scv("start")
         self.assertEqual(rc, 0, out + err)
-        self.assertTrue(d.wait(lambda: d.hellos and d.connects, 20), (d.hellos, d.connects))
-        self.assertEqual(d.hellos[0]["bridge_version"], scv.VERSION)
-        rc, out, _err = self.scv("status")
-        self.assertEqual(json.loads(out)["remote"]["state"], "streaming")
+        d = Dispatcher()
+        self._paired_to(d)
+        rc, out, err = self.scv("wake")
+        self.assertEqual(rc, 1, out + err)
+        self.assertIn("started before it was paired", out + err)
+        self.assertIn("stop it and start it again", out + err)
 
     @unittest.skipUnless(os.name == "nt", "console windows are a win32 thing")
     def test_the_background_bridge_has_a_console_and_it_is_hidden(self):

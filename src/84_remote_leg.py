@@ -41,6 +41,12 @@ class RemoteLeg:
         return {"state": self.state, "url": self.base, "connects": self.connects,
                 "refus" + "ed": self.refused}
 
+    def idle(self) -> bool:
+        """No job waiting in the send channel for its ack, none in flight (0.3.0: the sleep check's other half, next
+        to KeepAwake's count — a job still waiting for its ack is not in KeepAwake yet)."""
+        with self._early_lock:
+            return not self._queued and not self._cancels
+
     def stop(self) -> None:
         self._stop.set()
         left = self._outbox.stop()          # ⭐the new thread family gets shut down right here: whatever is still queued is dropped (and complained about), whatever is being worked on right now finishes and exits on its own

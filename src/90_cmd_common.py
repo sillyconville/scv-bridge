@@ -35,14 +35,24 @@ def _cmd_failed(what: str, next_step: str, detail: str = "") -> int:
     return 1
 
 
-def local_get(port: int, path: str, timeout: float = 3.0):
-    """Ask itself. Must bypass the environment proxy: when the user has set HTTP_PROXY without configuring
-    no_proxy, going through the proxy cannot reach 127.0.0.1 on this machine (B32).
+def local_fetch(port: int, path: str, timeout: float = 3.0):
+    """Ask itself, raw bytes (`None` = nothing answered, or not 2xx). Must bypass the environment proxy: when the user
+    has set HTTP_PROXY without configuring no_proxy, going through the proxy cannot reach 127.0.0.1 on this machine
+    (B32).
     ⭐It is one of the named outbound points in `NET_CALLERS`, but it only ever dials loopback: the address comes
       only from section ①'s `LOCAL_URL`; never follow a 302 outside loopback (`redirect_refused` ③)."""
     try:
-        return json.loads(_fetch(LOCAL_URL % port + path, timeout, urllib.request.ProxyHandler({})).decode("utf-8"))
+        return _fetch(LOCAL_URL % port + path, timeout, urllib.request.ProxyHandler({}))
     except NET_ERRORS:         # closes over `HTTPError` / the whole exception family, at the `_open` door
+        return None
+
+
+def local_get(port: int, path: str, timeout: float = 3.0):
+    """`local_fetch` read as JSON (`None` = no answer, or not JSON)."""
+    raw = local_fetch(port, path, timeout)
+    try:
+        return None if raw is None else json.loads(raw.decode("utf-8"))
+    except ValueError:         # UnicodeDecodeError ⊂ ValueError
         return None
 
 

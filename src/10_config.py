@@ -17,7 +17,7 @@ class BridgeError(Exception):
 
 DEFAULT_CONFIG = {"port": 8765, "max_concurrent": 4, "remote_url": "", "remote_token": "",
                   "remote_jobs_per_hour": 600, "allowed_origins": [], "claude_bin": "", "codex_bin": "",
-                  "keep_awake_s": 600, "extra_models": {"claude": [], "codex": []}}
+                  "keep_awake_s": 600, "idle_sleep_s": 600, "wake_on_start": False, "extra_models": {"claude": [], "codex": []}}
 
 _cfg_lock = threading.RLock()   # reentrant: the path that mints a token re-enters save_config() once more
 

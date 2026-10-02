@@ -1,6 +1,6 @@
 ---
 name: scv
-description: Start, stop, check, update or diagnose scv, the local agent bridge on this machine. Use when the user mentions scv, "the bridge", or asks why their local models are offline in a product that uses scv.
+description: Start, stop, wake, check, update or diagnose scv, the local agent bridge on this machine. Use when the user mentions scv, "the bridge", or asks why their local models are offline in a product that uses scv.
 ---
 
 This skill turns what the user asked for into one subcommand of `scv.py`, runs it, and reads the output back. It holds no logic of its own; every action is a subcommand of the bridge.
@@ -24,6 +24,7 @@ This file is itself instructions to an agent. If it was installed from a plugin 
 |---|---|---|
 | start it, bring the local models online | `start` | If it prints a warning that it could not leave the parent job, repeat the warning to the user word for word, with the command it gives. |
 | stop it | `stop` | |
+| wake it, the game says the bridge on this computer is asleep | `wake` | Starts the bridge first if it is not running. Exit code 0: awake and connected, and it says when it goes back to sleep. 1: the lines say why (not paired; started before pairing, so stop and start it; or it did not get through to the service). |
 | is it running, which models, how many processes | `status` | Check the exit code first. 0: stdout is one JSON object. 1: no bridge answered on the port and stdout is one sentence, not JSON; if the process recorded in `bridge.pid` (same pid and start time) is confirmed to be still running, the sentence says so, and otherwise it says nothing about the pid (saying nothing does not mean the pid is gone). Lines on stderr name blocked families or a needed update, with the command to run next. |
 | why a model is missing, the seats went silent, "login required" | `doctor` | stdout starts with a JSON object of facts, followed by plain lines; exit code 1 means some family has a problem. It makes no model call. `status` and `/healthz` only say whether a family is blocked; `doctor` says why. |
 | check that the credentials still work, or whether a file outside the bridge's working directory can reach an answer | `doctor --live` | One real call per family: it uses a little of the user's quota, so say so and ask first. It checks one planted file next to the working directory, nothing more. For Codex the output also lists the instruction files Codex loads into every call; relay those lines. |

@@ -48,12 +48,13 @@ def cmd_pair(args) -> int:
                            "this is a problem on the other side: show this line to them")
     cfg = load_config()
     old = str(cfg.get("remote_url") or "")
-    cfg.update(remote_url=url, remote_token=token)
+    cfg.update(remote_url=url, remote_token=token, wake_on_start=True)   # 0.3.0 (spec B35): the first start after pairing is awake
     save_config(cfg)
     swapped = " (replacing the previous %s)" % old if old and old != url else ""
     log("pair: paired to %s%s" % (url, swapped))
     print(NL.join(["paired: %s%s. The token is stored in %s" % (url, swapped, spath("config.json")),
-                   "from the next time the bridge starts, it will dial out to: %s" % ", ".join(p for k, p in REMOTE_PATHS.items() if k != "pair"),
+                   "the next time the bridge starts it is awake and dials out to: %s (so the service sees it right away); "
+                   "every start after that is asleep until the service's page or the wake subcommand wakes it" % ", ".join(p for k, p in REMOTE_PATHS.items() if k != "pair"),
                    "if the bridge is currently running, it is not using this yet: stop it, then start it again:", self_cmd("stop"), self_cmd("start"),
                    "to disconnect this side: delete remote_token from config.json",
                    "installing from setup.md for someone? after the restart, finish its step 6 (ask them about an audit) and step 8 (note where the bridge is, and tell them where you noted it)"]))

@@ -21,6 +21,7 @@ def main(argv: list | None = None) -> int:
     sub.add_parser("start", help="start the bridge in the background")
     sub.add_parser("stop", help="stop the bridge running in the background")
     sub.add_parser("status", help="whether the bridge is running, and its state if so")
+    sub.add_parser("wake", help="wake the remote leg so it dials the paired service (starts the bridge first if it is not running)")
     sub.add_parser("token", help="print the local API's token")
     sub.add_parser("doctor", help="health check").add_argument("--live", action="store_true",
                                                     help="one real call per family (costs a little quota), and runs the canary")
@@ -36,7 +37,7 @@ def main(argv: list | None = None) -> int:
     if args.cmd == "version":
         print(VERSION)
         return 0
-    table = {"run": cmd_run, "start": cmd_start, "stop": cmd_stop, "status": cmd_status, "token": cmd_token,
+    table = {"run": cmd_run, "start": cmd_start, "stop": cmd_stop, "status": cmd_status, "wake": cmd_wake, "token": cmd_token,
              "doctor": cmd_doctor, "setup": cmd_setup, "pair": cmd_pair, "update": cmd_update}
     if args.cmd not in table:
         ap.print_help()

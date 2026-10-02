@@ -1,5 +1,5 @@
 # ━━ Local API (B3/B5/B23): a few OpenAI-compatible routes + four guards
-GET_ROUTES = ("/healthz", "/v1/models")
+GET_ROUTES = ("/healthz", "/v1/models", "/wake")
 POST_ROUTES = ("/v1/chat/completions", "/v1/sessions/close")
 ROUTES = GET_ROUTES + POST_ROUTES   # ⭐there is only one routing table: preflight reads routes off it too (never let OPTIONS keep a table of its own)
 MAX_BODY = 8 * 1024 * 1024
@@ -37,6 +37,13 @@ REJECTED_PARAMS = ("tools", "tool_choice", "functions", "function_call", "logpro
 #   Gates on both ends read that table: every entry in `KNOWN_PARAMS`/`REJECTED_PARAMS` must be named in it, and
 #   whatever the "straight 400" row names must really be in these two tuples (tests/test_97_docs.py::CompatTable)
 #   — change these two tuples, and go change that table too.
+# 0.3.0 (spec B39): what `GET /wake` answers — a small page for a browser window (the lobby opens it in a popup of its
+#   own: a top-level page is the one way a web page may reach loopback without a permission prompt), never JSON.
+#   `Bridge.wake`'s outcome ⇒ (status, the one line it says, whether the page closes its own window).
+WAKE_PAGES = {"woke": (200, "The bridge is awake.", True), "awake": (200, "The bridge is awake.", True),
+              "not_paired": (409, "This bridge is not paired, so there is nothing to wake.", False),
+              "cannot_dial": (409, "This bridge cannot dial out: bridge.log on this machine says why.", False)}
+WAKE_CLOSE_MS = 600          # the page closes its own window this long after it shows (the lobby closes it too)
 _refuse_warned: set = set()   # each of the four guards only complains the first time (reasons in `Handler._refuse`)
 
 

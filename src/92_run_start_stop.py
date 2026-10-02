@@ -78,7 +78,8 @@ def spawn_detached(argv: list) -> tuple:
 
 
 def serve_until(bridge, stop: threading.Event) -> None:
-    """`scv run`'s main loop: reclaims idle sessions on the clock (A6). ⭐Wakes every 0.5s, never `wait(60)`: on
+    """`scv run`'s main loop: reclaims idle sessions on the clock (A6), keeps the machine awake and puts an idle remote
+    leg to sleep (0.2.0 / 0.3.0). ⭐Wakes every 0.5s, never `wait(60)`: on
     win32, when the main thread is stuck in a long wait, Ctrl+C only gets handled once it wakes up (⏳this is
     written to CPython's known behaviour, not measured on this machine)."""
     last = poked = time.time()
@@ -86,6 +87,10 @@ def serve_until(bridge, stop: threading.Event) -> None:
         if time.time() - poked >= AWAKE_EVERY_S:
             poked = time.time()
             bridge.awake.tick()
+            try:
+                bridge.idle_tick()          # 0.3.0 (spec B38): quiet for idle_sleep_s ⇒ back to sleep
+            except Exception as e:          # the sleep check blowing up must never take the whole bridge down with it
+                log("❌ the sleep check blew up (the bridge keeps running, still awake): %s: %s" % (type(e).__name__, e))
         if time.time() - last >= GC_EVERY_S:
             last = time.time()
             try:
@@ -124,6 +129,21 @@ def sweep_work() -> int:
         log("cleaned up %d leftover session work director%s under work/ (left behind by a hard stop): %s" % (
             len(gone), "y" if len(gone) == 1 else "ies", ", ".join(gone[:8])))
     return len(gone)
+
+
+def _wake_at_start(bridge, cfg: dict) -> str:
+    """0.3.0 (spec B35): a bridge starts asleep — the one exception is the first start after `scv pair` (it has a job
+    to do: show up in the service that just handed out the code). ⭐The mark is cleared **before** waking: a bridge
+    that dies right after must never wake again on the next start. Returns the log's words for the remote leg."""
+    if not _paired(cfg):
+        return "off (not paired)"
+    if not cfg.get("wake_on_start"):
+        return "asleep: it sends nothing until woken (GET /wake, or the wake subcommand)"
+    cfg["wake_on_start"] = False
+    save_config(cfg)
+    if bridge.wake("the first start after pairing") == "woke":
+        return "awake, dialing %s (the first start after pairing)" % cfg["remote_url"]
+    return "asleep: waking it at start did not work (the line above says why)"
 
 
 def cmd_run(args) -> int:
@@ -169,9 +189,9 @@ def cmd_run(args) -> int:
             with contextlib.suppress(ValueError, OSError):
                 signal.signal(sig, lambda *_: stop.set())
     try:
-        paired = bridge.start_remote()
+        how = _wake_at_start(bridge, cfg)
         log("scv %s is up (pid %d): the local API is on %s:%d; models %s; remote leg %s" % (
-            VERSION, me, LOCAL_HOST, port, bridge.cat, bridge.remote.base if paired else "off (not paired)"))
+            VERSION, me, LOCAL_HOST, port, bridge.cat, how))
         serve_until(bridge, stop)
     finally:
         bridge.stop()
@@ -288,6 +308,55 @@ def cmd_status(args) -> int:
         print("⇒ these families are blocked and not being reported: %s; see doctor for why and what to do:" % ", ".join(blocked) + NL + self_cmd("doctor"), file=sys.stderr)
     if (health.get("remote") or {}).get("state") == "too_old":
         print("⇒ the remote leg refused this version; update (no arguments = use the pair the dispatcher gave in its last hello):" + NL + self_cmd("update"), file=sys.stderr)
+    rem = health.get("remote") or {}
+    if rem.get("state") == "asleep":
+        print("⇒ asleep: the remote leg sends nothing until woken — the service's page wakes it, or:" + NL + self_cmd("wake"), file=sys.stderr)
+    elif isinstance(rem.get("sleeps_in_s"), int):
+        print("⇒ awake: back to sleep in about %d minute(s) if no remote job comes" % max(1, -(-rem["sleeps_in_s"] // 60)), file=sys.stderr)
+    return 0
+
+
+WAKE_WAIT_S = 8.0      # final review I2: how long `wake` waits for the remote leg to get through before saying it did not
+
+
+def cmd_wake(args) -> int:
+    """0.3.0 (spec B36): wake the remote leg — starting the bridge first when it is not running (one command for both
+    cases). ⭐It knocks on the same `GET /wake` a browser does (one door for waking), then reads `/healthz` for the
+    verdict (`/wake` answers a page for a browser, not JSON).
+    ⭐"awake" means the stream is up (`streaming`), never just "it started dialing": a leg stuck retrying (the service
+    is down, a proxy is wrong, the token was replaced) used to be reported as awake with exit code 0, and the
+    player's agent then said "awake" while the game said "asleep" (final review I2)."""
+    cfg = load_config()
+    if not _paired(cfg):
+        return _cmd_failed("not paired: there is nothing to wake (a bridge that is not paired never dials out)",
+                           "pair it first (the service's page gives the code): append ' <url> --code <pairing code>' to this line and run it:"
+                           + NL + self_cmd("pair"))
+    port = int(cfg.get("port") or DEFAULT_CONFIG["port"])
+    if our_health(port) is None:
+        rc = cmd_start(args)
+        if rc:
+            return rc
+        port = int(load_config().get("port") or DEFAULT_CONFIG["port"])   # `start` may have moved it off a taken default
+    local_fetch(port, "/wake")
+    end = time.time() + WAKE_WAIT_S
+    while True:
+        rem = (our_health(port) or {}).get("remote") or {}
+        if rem.get("state") in ("streaming", "off", "too_old") or time.time() >= end:
+            break
+        time.sleep(0.25)
+    if rem.get("state") == "off":
+        # config.json says paired, the bridge on that port says not: it read its config before `pair` (and answered
+        # /wake with not_paired)
+        return _cmd_failed("the running bridge was started before it was paired, so it has nothing to wake",
+                           "stop it and start it again:" + NL + self_cmd("stop") + NL + self_cmd("start"))
+    if rem.get("state") != "streaming":
+        why = rem.get("refus" + "ed")      # spelled in pieces, like RemoteLeg.describe (the OneDoor gate)
+        return _cmd_failed("the bridge did not get through to the service within %d seconds (its remote leg says %r%s)"
+                           % (int(WAKE_WAIT_S), rem.get("state"), ": " + why if why else ""),
+                           "the last lines of bridge.log (below) say why", _log_tail())
+    idle = _config_seconds(cfg, "idle_sleep_s")
+    print("awake: the remote leg dials %s; %s" % (rem.get("url"), "it goes back to sleep after %d minute(s) without a remote job" % max(1, int(idle // 60))
+                                                    if idle > 0 else "it stays awake until the bridge stops (idle_sleep_s is 0)"))
     return 0
 
 
